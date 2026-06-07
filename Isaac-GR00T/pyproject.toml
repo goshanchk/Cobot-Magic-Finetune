@@ -53,6 +53,7 @@ dependencies = [
     "tensorrt-cu12>=10.15.1.29; platform_machine == 'x86_64'",
     "tensorrt-cu13>=10.15.1.29; platform_machine == 'aarch64'",
     "tensorboard",
+    "setuptools<81",
 ]
 
 [project.optional-dependencies]
