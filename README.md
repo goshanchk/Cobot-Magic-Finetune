@@ -1,0 +1,24 @@
+# Cobot Magic Fine-Tuning
+
+This repository contains fine-tuning integrations for the Cobot Magic LeRobot dataset. It keeps two model pipelines side by side so the same dataset can be tested with both OpenVLA-OFT and NVIDIA Isaac-GR00T N1.7.
+
+## Structure
+
+```text
+openvla-oft/       # OpenVLA-OFT integration: LeRobot loader, FSDP/DDP launch commands, TensorBoard logs
+Isaac-GR00T/       # Isaac-GR00T integration: Cobot Magic modality config, DeepSpeed launch commands, TensorBoard logs
+dataset_description.txt
+```
+
+## Read Next
+
+- [OpenVLA-OFT instructions](openvla-oft/README.md)
+- [Isaac-GR00T instructions](Isaac-GR00T/README.md)
+
+## Dataset
+
+Expected dataset root in launch examples:
+
+```text
+/path/to/cobot_magic_sber
+```

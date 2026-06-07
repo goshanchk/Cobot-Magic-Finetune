@@ -1,0 +1,900 @@
+Dataset description: cobot_magic_sber
+================================================
+
+Purpose of this file
+--------------------
+
+This is a handoff note for future analysis/training runs with the local Cobot
+Magic dataset. It summarizes the dataset layout, metadata, real values observed
+during audit, action/state semantics, known risks, and safe commands for
+read-only inspection.
+
+Important safety rule
+---------------------
+
+The dataset is research data. Do not modify, delete, rewrite, re-encode, or
+regenerate dataset files without explicit user approval.
+
+Preferred mode: read-only inspection.
+
+Dataset path
+------------
+
+Local path:
+
+    /path/to/cobot_magic_sber
+
+High-level summary
+------------------
+
+Dataset format:
+
+    LeRobot-like v2.1 layout
+
+Robot:
+
+    cobot_magic_sber_fk_eef_armbase
+
+Main numbers from meta/info.json:
+
+    codebase_version: v2.1
+    robot_type: cobot_magic_sber_fk_eef_armbase
+    total_episodes: 7341
+    total_frames: 609146
+    total_tasks: 1858
+    total_videos: 22023
+    total_chunks: 8
+    chunks_size: 1000
+    fps: 15
+
+Total duration:
+
+    609146 frames / 15 fps = 40609.7333 sec = 11.2805 hours
+
+Dataset size:
+
+    total: 7.8G
+    data: 146M
+    videos: 7.6G
+    meta: 43M
+    filter: 120K
+
+Directory layout
+----------------
+
+Compact tree:
+
+    /path/to/cobot_magic_sber
+    ├── data
+    │   ├── chunk-000
+    │   ├── chunk-001
+    │   ├── chunk-002
+    │   ├── chunk-003
+    │   ├── chunk-004
+    │   ├── chunk-005
+    │   ├── chunk-006
+    │   └── chunk-007
+    ├── videos
+    │   ├── chunk-000
+    │   │   ├── observation.images.camera_0
+    │   │   ├── observation.images.camera_1
+    │   │   └── observation.images.camera_2
+    │   ├── ...
+    │   └── chunk-007
+    │       ├── observation.images.camera_0
+    │       ├── observation.images.camera_1
+    │       └── observation.images.camera_2
+    ├── meta
+    └── filter
+        ├── v1
+        └── filter/v1
+
+Folder meanings:
+
+    data/
+        Tabular timestep data. Contains one parquet file per episode.
+
+    videos/
+        Video observations. Contains one mp4 file per episode per camera.
+
+    meta/
+        Dataset metadata: feature definitions, statistics, episode/task lists,
+        validation episode list, viewer/curation state.
+
+    filter/
+        DataQA/filtering artifacts. Contains dataqa_config.yaml,
+        filtered_episodes.json, and dataqa_results.yaml under v1 paths.
+
+File counts observed:
+
+    data .parquet total 7341
+      chunk-000 1000
+      chunk-001 1000
+      chunk-002 1000
+      chunk-003 1000
+      chunk-004 1000
+      chunk-005 1000
+      chunk-006 1000
+      chunk-007 341
+
+    videos .mp4 total 22023
+      7341 episodes * 3 cameras = 22023 videos
+
+Core terms
+----------
+
+Episode:
+
+    One complete demonstration/trajectory of a task. Example: pick up an
+    object and place it into the plastic container.
+
+Timestep:
+
+    One time step inside an episode. Since fps=15, consecutive timesteps are
+    about 1/15 sec = 0.0666667 sec apart.
+
+Trajectory:
+
+    The full sequence inside an episode: images, robot states, actions,
+    timestamps, and language instruction.
+
+Rollout:
+
+    A run of a trained policy in an environment or on a robot. The dataset
+    contains demonstrations/trajectories, not online rollouts.
+
+Chunk:
+
+    A technical storage grouping. Here chunks usually contain 1000 episodes.
+    A chunk is not a task and not an episode.
+
+Observation:
+
+    What the model sees: images, robot state/proprioception, and language.
+
+Action:
+
+    What the model is trained to predict. In this dataset action has special
+    semantics: action[t] is the next patched robot state, state[t+1].
+
+Metadata files
+--------------
+
+meta/info.json
+~~~~~~~~~~~~~~
+
+Main dataset passport. Important fields:
+
+    codebase_version: LeRobot codebase version. Value: "v2.1".
+    robot_type: Robot identifier. Value: "cobot_magic_sber_fk_eef_armbase".
+    total_episodes: Number of episodes. Value: 7341.
+    total_frames: Number of timesteps/rows across all episodes. Value: 609146.
+    total_tasks: Number of unique task instructions. Value: 1858.
+    total_videos: Number of mp4 videos. Value: 22023.
+    fps: Dataset recording frequency. Value: 15.
+
+Path templates:
+
+    data_path:
+        data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet
+
+    video_path:
+        videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4
+
+Splits:
+
+    {"train": "0:7341"}
+
+Note: validation episodes exist in validation_episodes.json, but are not
+represented in this splits field.
+
+Features from info.json:
+
+    observation.images.camera_0:
+        dtype: video
+        shape: [256, 256, 3]
+        video fps: 15.0
+        codec: av1
+        pix_fmt: yuv420p
+
+    observation.images.camera_1:
+        dtype: video
+        shape: [256, 256, 3]
+        video fps: 15.0
+        codec: av1
+        pix_fmt: yuv420p
+
+    observation.images.camera_2:
+        dtype: video
+        shape: [256, 256, 3]
+        video fps: 15.0
+        codec: av1
+        pix_fmt: yuv420p
+
+    observation.state:
+        dtype: float32
+        shape: [26]
+
+    action:
+        dtype: float32
+        shape: [26]
+
+    timestamp: float32, shape [1]
+    frame_index: int64, shape [1]
+    episode_index: int64, shape [1]
+    index: int64, shape [1]
+    task_index: int64, shape [1]
+
+State/action names:
+
+    0   left_q0
+    1   left_q1
+    2   left_q2
+    3   left_q3
+    4   left_q4
+    5   left_q5
+    6   left_q6
+    7   right_q0
+    8   right_q1
+    9   right_q2
+    10  right_q3
+    11  right_q4
+    12  right_q5
+    13  right_q6
+    14  left_eef.x
+    15  left_eef.y
+    16  left_eef.z
+    17  left_eef.roll
+    18  left_eef.pitch
+    19  left_eef.yaw
+    20  right_eef.x
+    21  right_eef.y
+    22  right_eef.z
+    23  right_eef.roll
+    24  right_eef.pitch
+    25  right_eef.yaw
+
+Processing note from info.json:
+
+    "Patched RDT Cobot Magic state/action with left/right EEF xyz+rpy from FK
+    using the Tracer2+ARX hybrid URDF; action remains shifted patched
+    observation.state."
+
+Very important action semantics:
+
+    action[t] = patched observation.state[t+1]
+    final frame repeats
+
+This means action is an absolute next-state target, not a delta action and not
+low-level torque/motor command.
+
+meta/modality.json
+~~~~~~~~~~~~~~~~~~
+
+Maps raw keys to semantic modality names.
+
+State/action slices:
+
+    all_arms: start 0, end 14
+    left_eef: start 14, end 20, rotation_type euler_xyz
+    right_eef: start 20, end 26, rotation_type euler_xyz
+
+Video semantic names:
+
+    cam_right_wrist -> observation.images.camera_0
+    cam_left_wrist  -> observation.images.camera_1
+    cam_high        -> observation.images.camera_2
+
+Annotation:
+
+    human.task_description -> task_index
+
+Interpretation: language instruction is not stored as a string in parquet. It
+is recovered through task_index -> meta/tasks.jsonl.
+
+meta/stats.json
+~~~~~~~~~~~~~~~
+
+Contains global normalization stats for observation.state and action:
+
+    mean, std, min, max, q01, q99
+
+Critical issue:
+
+    stats.json contains only 14 values for observation.state and action.
+    But info.json and parquet files contain 26-dimensional state/action.
+
+Likely explanation:
+
+    The original dataset had 14 arm/joint dimensions. Later the dataset was
+    patched with 12 EEF pose dimensions using forward kinematics. Per-episode
+    stats were updated, but global stats.json appears stale.
+
+Training risk:
+
+    Do not blindly use stats.json to normalize 26-dim state/action. It will
+    either fail by shape mismatch or silently normalize only part of the action
+    depending on the loader.
+
+meta/episodes.jsonl
+~~~~~~~~~~~~~~~~~~~
+
+One JSON object per episode.
+
+Example rows:
+
+    {"episode_index": 0, "tasks": ["Pick up the roll of tape and place it in the plastic container."], "length": 81}
+    {"episode_index": 1, "tasks": ["Pick green pliers and place them in the plastic container."], "length": 105}
+    {"episode_index": 2, "tasks": ["Pick green towel and place it in the plastic container."], "length": 100}
+
+Last rows:
+
+    {"episode_index": 7338, "tasks": ["Pick blue marker and place it in the plastic container."], "length": 74}
+    {"episode_index": 7339, "tasks": ["Pick up the yellow-black pliers and place them in the plastic container"], "length": 78}
+    {"episode_index": 7340, "tasks": ["Pick up the roll of tape and place it in the plastic container."], "length": 83}
+
+Observed aggregate values:
+
+    episodes: 7341
+    frames_sum: 609146
+    length_min: 2
+    length_max: 223
+    length_mean: 82.97861326794714
+    length_median: 79
+    duration_seconds_at_15fps: 40609.73333333333
+    duration_hours_at_15fps: 11.28048148148148
+    tasks_per_episode: {1: 7341}
+
+Length quantiles:
+
+    q01: 51
+    q05: 57
+    q25: 67
+    q75: 93
+    q95: 125
+    q99: 150
+
+Quantile explanation:
+
+    q95 = 125 means 95% of episodes have length <= 125 timesteps.
+    Quantiles are useful because averages can hide outliers.
+
+Risk:
+
+    length_min = 2 timesteps is suspicious. A 2-step episode at 15 Hz lasts
+    only 0.133 sec and is likely not a complete demonstration. Find and inspect
+    such episodes before training.
+
+meta/tasks.jsonl
+~~~~~~~~~~~~~~~~
+
+One JSON object per unique instruction.
+
+Example rows:
+
+    {"task_index": 0, "task": "Pick up the roll of tape and place it in the plastic container."}
+    {"task_index": 1, "task": "Pick green pliers and place them in the plastic container."}
+    {"task_index": 2, "task": "Pick green towel and place it in the plastic container."}
+    {"task_index": 4, "task": "Pick up the balck marker and place it in the plastic container"}
+
+Last rows:
+
+    {"task_index": 1855, "task": "Pick sharpener and place them in the plastic container."}
+    {"task_index": 1856, "task": "Pick up the rectangular object with a yellow circle and place it in the plastic container."}
+    {"task_index": 1857, "task": "Pick the green-capped tube and place it in the plastic container."}
+
+Language exists, but there are typos and inconsistent wording. Examples:
+
+    "balck marker"
+    "place it in" vs "place it into"
+    missing final punctuation in some tasks
+
+This is not fatal for VLA training, but it is a data-quality risk.
+
+Top repeated task strings observed:
+
+    Pick up the roll of tape and place it in the plastic container. -> 133
+    Pick up the putty and place it in the plastic container -> 93
+    Pick up the glue stick and place it in the plastic container -> 88
+    Pick up the white box and place it in the plastic container -> 78
+    Pick up the black tape and place it in the plastic container -> 72
+
+meta/validation_episodes.json
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Contains 30 episode indices:
+
+    [867, 5193, 1887, 2908, 985, 6215, 1099, 2898, 6704, 3478, 4115,
+     6981, 1661, 3414, 7088, 4802, 3426, 2865, 2215, 5445, 3950,
+     1789, 1193, 383, 5168, 885, 5944, 694, 650, 4409]
+
+Important:
+
+    info.json has only train split "0:7341". If a training loader only reads
+    info.json splits, it will not automatically use this validation list.
+
+meta/viewer_state.json
+~~~~~~~~~~~~~~~~~~~~~~
+
+Current content:
+
+    excluded_manual: []
+    excluded_dataqa: []
+    excluded_bad_auto: []
+    flagged_bad_fuzzy: []
+    kept_override: []
+    subtask_edits: {}
+    notes: {}
+    instr_source_config: {}
+
+Interpretation:
+
+    No manually excluded or DataQA-excluded episodes are recorded here.
+
+meta/episodes_stats.jsonl
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+One JSON object per episode with per-episode min/max/mean/std/count for:
+
+    observation.images.camera_0
+    observation.images.camera_1
+    observation.images.camera_2
+    observation.state
+    action
+    timestamp
+    frame_index
+    episode_index
+    index
+    task_index
+
+Important observed values:
+
+    rows: 7341
+    count_sum: 609146
+    state_dim: 26
+    action_dim: 26
+
+This file confirms 26-dimensional state/action and can be used to recompute
+correct global stats if needed.
+
+Parquet structure
+-----------------
+
+Inspected file:
+
+    data/chunk-000/episode_000000.parquet
+
+File size:
+
+    20K
+
+Parquet reader note:
+
+    System python did not have pyarrow/pandas installed:
+        pyarrow False
+        pandas False
+
+    Read was performed via:
+        uv run --with pyarrow --with pandas python3 -c "..."
+
+Observed parquet metadata:
+
+    num_row_groups: 1
+    metadata_num_rows: 81
+    metadata_num_columns: 7
+
+Columns:
+
+    observation.state
+    action
+    timestamp
+    frame_index
+    episode_index
+    index
+    task_index
+
+Arrow schema:
+
+    observation.state: fixed_size_list<element: float>[26]
+    action: fixed_size_list<element: float>[26]
+    timestamp: float
+    frame_index: int64
+    episode_index: int64
+    index: int64
+    task_index: int64
+
+Pandas shape:
+
+    (81, 7)
+
+First timestep of episode 0:
+
+    timestamp: 0.0
+    frame_index: 0
+    episode_index: 0
+    index: 0
+    task_index: 0
+
+    observation.state:
+        [-0.40188408, 1.2998781, 0.92984676, -0.57965183,
+         -0.21648693, -0.2615013, 4.3123894,
+          0.75284195, 0.45796108, 1.258297, -1.2090864,
+          0.35648918, 0.11654091, 4.3101006,
+          0.24612308, 0.07355578, -0.24508287,
+         -0.083778724, -0.91542363, 0.09671244,
+          0.0076190354, 0.0066371113, -0.39911515,
+         -0.068264306, -0.37723187, -0.36075115]
+
+    action:
+        [-0.40188408, 1.2998781, 0.92984676, -0.57965183,
+         -0.21648693, -0.2615013, 4.2807274,
+          0.75284195, 0.45796108, 1.258297, -1.2090864,
+          0.35648918, 0.11654091, 4.3101006,
+          0.24612308, 0.07355578, -0.24508287,
+         -0.083778724, -0.91542363, 0.09671244,
+          0.0076190354, 0.0066371113, -0.39911515,
+         -0.068264306, -0.37723187, -0.36075115]
+
+Action shift check:
+
+    states_shape: (81, 26)
+    actions_shape: (81, 26)
+    max_abs(action[:-1] - state[1:]): 0.0
+    max_abs(action[-1] - state[-1]): 0.0
+
+Therefore:
+
+    action[t] = observation.state[t+1]
+    final action repeats final state
+
+Video linkage
+-------------
+
+For episode 0, corresponding videos:
+
+    videos/chunk-000/observation.images.camera_0/episode_000000.mp4
+    videos/chunk-000/observation.images.camera_1/episode_000000.mp4
+    videos/chunk-000/observation.images.camera_2/episode_000000.mp4
+
+File sizes:
+
+    camera_0: 332K
+    camera_1: 202K
+    camera_2: 358K
+
+ffprobe for all three episode 0 videos:
+
+    codec_name=av1
+    width=256
+    height=256
+    pix_fmt=yuv420p
+    r_frame_rate=15/1
+    avg_frame_rate=15/1
+    duration=5.400000
+    nb_frames=81
+
+This matches:
+
+    parquet rows = 81
+    video frames = 81
+    fps = 15
+
+How a training sample is constructed
+------------------------------------
+
+For one timestep t:
+
+    Inputs:
+        image from camera_0 at frame_index=t
+        image from camera_1 at frame_index=t
+        image from camera_2 at frame_index=t
+        observation.state[t]
+        language instruction from task_index
+
+    Target:
+        action[t]
+
+In this dataset:
+
+    action[t] = observation.state[t+1]
+
+For episode 0:
+
+    task_index = 0
+    instruction = "Pick up the roll of tape and place it in the plastic container."
+
+The model does not usually learn by predicting the next image and fitting an
+action to that image. In behavior cloning/imitation learning it directly learns:
+
+    policy(images, state, instruction) -> expert_action
+
+Here expert_action is the next 26-dimensional robot state.
+
+VLA learning intuition
+----------------------
+
+VLA means Vision-Language-Action.
+
+Typical components:
+
+    images -> vision encoder / vision transformer -> visual tokens
+    text -> language model / text transformer -> language tokens
+    robot state -> projection MLP -> state/proprio tokens
+    fused tokens -> transformer/policy head -> action vector
+
+The output can be a continuous vector:
+
+    action = [a0, a1, ..., a25]
+
+The training loss compares this predicted vector to the dataset action:
+
+    loss = L1/MSE(predicted_action, expert_action)
+
+The model learns how to change each joint because it repeatedly sees examples
+of similar scenes, instructions, current states, and expert next actions.
+
+There can be many possible valid joint configurations. This is called action
+ambiguity. Behavior cloning does not solve all possible plans; it learns the
+style and local next-step choices present in the demonstrations.
+
+Why current state matters:
+
+    Images show objects and scene layout.
+    Language says what to do.
+    State tells the model where the robot already is.
+    The next action is only a short step at 15 Hz, not a full task plan.
+
+Gripper, reward, success
+------------------------
+
+Explicit gripper field:
+
+    Not found.
+
+Potential gripper-like dimensions:
+
+    left_q6
+    right_q6
+
+Reason:
+
+    Their ranges are large and may correspond to gripper/open-close or a final
+    gripper-like DOF, but metadata names them only q6.
+
+Need confirmation:
+
+    Check Cobot Magic control convention or visually correlate q6 changes with
+    wrist camera frames.
+
+Reward fields:
+
+    Not found.
+
+Success/done/terminal fields:
+
+    Not found.
+
+Language:
+
+    Present through task_index -> tasks.jsonl.
+
+Known risks and issues
+----------------------
+
+1. stats.json is stale/incomplete
+
+    info.json and parquet say state/action are 26-dimensional.
+    stats.json has only 14 values for state/action.
+
+    Risk:
+        Wrong normalization during training.
+
+    Recommended action:
+        Recompute global stats for all 26 dims or configure loader to use
+        correct 26-dim stats from episodes_stats.jsonl/parquet.
+
+2. action semantics may not match model defaults
+
+    This dataset stores:
+        action[t] = state[t+1]
+
+    Some VLA pipelines expect:
+        delta action
+        EEF-only action
+        joint-only action
+        action chunks
+        discretized action tokens
+
+    Recommended action:
+        Before training OpenVLA-OFT, GreenVLA, or GR00T, inspect each model's
+        expected action format and convert if needed.
+
+3. Very short episodes exist
+
+    length_min = 2 timesteps.
+
+    Risk:
+        Broken/incomplete demonstrations can harm training or metrics.
+
+    Recommended action:
+        List and inspect episodes with length below a threshold, e.g. < 20 or
+        < 50 timesteps.
+
+4. No explicit success labels
+
+    Risk:
+        Failed demonstrations may be included unless filtered elsewhere.
+
+    Recommended action:
+        Use viewer/DataQA/filter artifacts and sample visual inspection.
+
+5. Validation split is not in info.json splits
+
+    validation_episodes.json has 30 episodes, but info.json says all episodes
+    are train.
+
+    Risk:
+        Training code may train on validation episodes unless explicitly
+        configured.
+
+6. Language has typos/inconsistencies
+
+    Examples:
+        "balck marker"
+        "place it in" vs "place it into"
+        missing punctuation
+
+    Risk:
+        Usually acceptable for robust VLA models, but can matter for task
+        grouping, evaluation, and instruction normalization.
+
+7. AV1 video codec
+
+    Videos are AV1.
+
+    Risk:
+        Some loaders/environments may lack AV1 decode support or decode slowly.
+
+    Recommended action:
+        Test the exact training dataloader on a few samples before long runs.
+
+8. Gripper semantics are unclear
+
+    There is no explicit gripper field. q6 for each arm may be gripper-like,
+    but this must be confirmed.
+
+9. EEF poses are FK-derived
+
+    EEF xyz/rpy were patched using forward kinematics and a URDF.
+
+    Risk:
+        If URDF/sign conventions are wrong, EEF fields may be systematically
+        off. Joint scale signs are listed in info.json and should be respected.
+
+Read-only commands used during audit
+------------------------------------
+
+Dataset structure:
+
+    find /path/to/cobot_magic_sber -maxdepth 3 -type d -print
+    ls -lh /path/to/cobot_magic_sber/meta
+    du -sh /path/to/cobot_magic_sber/data \
+           /path/to/cobot_magic_sber/videos \
+           /path/to/cobot_magic_sber/meta \
+           /path/to/cobot_magic_sber/filter
+
+Meta inspection:
+
+    cat /path/to/cobot_magic_sber/meta/info.json
+    cat /path/to/cobot_magic_sber/meta/modality.json
+    cat /path/to/cobot_magic_sber/meta/stats.json
+    cat /path/to/cobot_magic_sber/meta/validation_episodes.json
+    cat /path/to/cobot_magic_sber/meta/viewer_state.json
+    head -n 5 /path/to/cobot_magic_sber/meta/episodes.jsonl
+    head -n 8 /path/to/cobot_magic_sber/meta/tasks.jsonl
+    head -n 2 /path/to/cobot_magic_sber/meta/episodes_stats.jsonl
+    wc -l /path/to/cobot_magic_sber/meta/episodes.jsonl \
+          /path/to/cobot_magic_sber/meta/tasks.jsonl \
+          /path/to/cobot_magic_sber/meta/episodes_stats.jsonl
+
+Parquet inspection:
+
+    uv run --with pyarrow --with pandas python3 -c "import pyarrow.parquet as pq; ..."
+
+Video inspection:
+
+    ffprobe -v error -select_streams v:0 \
+      -show_entries stream=codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames,duration,pix_fmt \
+      -of default=noprint_wrappers=1 \
+      /path/to/cobot_magic_sber/videos/chunk-000/observation.images.camera_0/episode_000000.mp4
+
+Recommended next checks before training
+---------------------------------------
+
+1. Find short episodes.
+
+    Parse episodes.jsonl and list episodes with length < 20 or < 50.
+
+2. Confirm gripper semantics.
+
+    Inspect q6/right_q6 changes alongside video frames for several episodes.
+
+3. Recompute 26-dimensional global stats.
+
+    Use parquet or episodes_stats.jsonl. Do not rely on current stats.json for
+    26-dimensional normalization.
+
+4. Test dataloader decoding.
+
+    Ensure the training stack can decode AV1 mp4 and align frame_index with
+    parquet rows.
+
+5. Confirm action format for the selected model.
+
+    OpenVLA-OFT, GreenVLA, and GR00T may expect different action spaces.
+
+6. Respect validation_episodes.json.
+
+    Exclude those 30 episodes from train if using them for validation.
+
+7. Sample visual QA.
+
+    Check random episodes, shortest episodes, longest episodes, and common
+    repeated tasks.
+
+8. Check train/eval leakage by language/task.
+
+    Since validation_episodes.json contains only 30 episodes, decide whether
+    evaluation should be episode-held-out or object/task-held-out.
+
+Current compatibility intuition
+-------------------------------
+
+OpenVLA-OFT:
+
+    Dataset is close to LeRobot v2, but may not work directly if OpenVLA-OFT
+    expects a different action representation. Need to inspect the exact local
+    OpenVLA-OFT training config. Likely needs at least action normalization fix
+    and possibly action conversion.
+
+GreenVLA:
+
+    Main research target. It may be suitable if GreenVLA supports multi-camera
+    image input, language instructions, proprioception, and 26-dim continuous
+    action or a configurable action head. Need exact GreenVLA data adapter. The
+    14-vs-26 stats issue must be handled.
+
+GR00T N1.7:
+
+    Likely requires a converter or schema adapter, because GR00T-style datasets
+    commonly expect a specific embodiment/action schema and modality naming.
+    Need to inspect the local GR00T data format requirements.
+
+Dataset suitability for research
+--------------------------------
+
+11.28 hours is a meaningful small/medium fine-tuning dataset for a focused
+pick-and-place-like domain, especially if starting from a pretrained VLA.
+
+Expected behavior:
+
+    From scratch training: not enough.
+    Fine-tuning pretrained VLA: plausible.
+    High risk of overfitting if tasks/objects/scenes are repetitive.
+
+Likely batch size on 2x RTX 4090:
+
+    Depends heavily on model size, image count, action horizon, precision, and
+    gradient checkpointing. For large VLA fine-tuning, expect small per-GPU
+    batches and gradient accumulation. A realistic starting point is often
+    per-GPU batch 1-4 for heavy models, larger only with frozen encoders/LoRA or
+    shorter action chunks.
+
+Most important blockers before any long training run:
+
+    1. Fix/avoid stale 14-dim stats.json.
+    2. Confirm model expected action semantics.
+    3. Confirm gripper meaning.
+    4. Confirm AV1 dataloader support.
+    5. Filter or inspect suspicious short episodes.
+    6. Make validation split explicit in training config.
