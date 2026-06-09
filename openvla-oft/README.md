@@ -7,7 +7,7 @@ The recommended training path is the direct `lerobot` PyTorch dataloader. The or
 
 ```text
 experiments/robot/openvla_utils.py                         # OpenVLA helper utilities, TF imported lazily only when needed
-prismatic/vla/constants.py                                 # ACTION_DIM=26, PROPRIO_DIM=26, ACTION_CHUNK=24
+prismatic/vla/constants.py                                 # ACTION_DIM=14, PROPRIO_DIM=14, ACTION_CHUNK=24
 prismatic/vla/datasets/datasets.py                         # LeRobotDataset, LeRobotBatchTransform, RLDS wrappers
 prismatic/vla/datasets/__init__.py                         # dataset exports
 prismatic/vla/datasets/rlds/oxe/*.py                       # optional RLDS/OXE registration
@@ -43,16 +43,19 @@ Direct LeRobot mapping:
 observation.images.camera_2 -> primary image
 observation.images.camera_1 -> left wrist image
 observation.images.camera_0 -> right wrist image
-observation.state           -> proprio, shape [26]
-action                      -> action, shape [26]
+observation.state           -> raw state, shape [26]; loader keeps first 14 joint dims
+action                      -> raw action, shape [26]; loader keeps first 14 joint dims
 task_index                  -> language_instruction via meta/tasks.jsonl
 ```
+
+Only the joint-space part is trained: `left_q0..left_q6 + right_q0..right_q6`.
+The raw FK EEF xyz/rpy coordinates stay in the source dataset but are dropped by the loader, because current ALOHA control supports joint commands only.
 
 Cobot constants:
 
 ```text
-ACTION_DIM = 26
-PROPRIO_DIM = 26
+ACTION_DIM = 14
+PROPRIO_DIM = 14
 NUM_ACTIONS_CHUNK = 24
 ACTION_PROPRIO_NORMALIZATION_TYPE = bounds
 ```

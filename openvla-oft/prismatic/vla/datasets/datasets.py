@@ -156,6 +156,16 @@ def _stats_dict(values: np.ndarray) -> Dict[str, Any]:
     }
 
 
+def _select_joint_dims(values: np.ndarray, target_dim: int, field_name: str, episode_index: int) -> np.ndarray:
+    if values.ndim != 2:
+        raise ValueError(f"Expected {field_name} shape [T, D], got {values.shape} for episode {episode_index}")
+    if values.shape[1] == target_dim:
+        return values
+    if target_dim == 14 and values.shape[1] >= 14:
+        return values[:, :14]
+    raise ValueError(f"Expected {field_name} shape [T, {target_dim}], got {values.shape} for episode {episode_index}")
+
+
 def _make_lerobot_splits(
     dataset_dir: Path,
     train: bool,
@@ -273,10 +283,8 @@ class LeRobotDataset(IterableDataset):
             table = pq.read_table(_episode_parquet_path(self.data_root_dir, self.info, episode_index))
             actions = np.asarray(table["action"].to_pylist(), dtype=np.float32)
             states = np.asarray(table["observation.state"].to_pylist(), dtype=np.float32)
-            if actions.ndim != 2 or actions.shape[1] != ACTION_DIM:
-                raise ValueError(f"Expected action shape [T, {ACTION_DIM}], got {actions.shape} for episode {episode_index}")
-            if states.ndim != 2 or states.shape[1] != PROPRIO_DIM:
-                raise ValueError(f"Expected state shape [T, {PROPRIO_DIM}], got {states.shape} for episode {episode_index}")
+            actions = _select_joint_dims(actions, ACTION_DIM, "action", episode_index)
+            states = _select_joint_dims(states, PROPRIO_DIM, "observation.state", episode_index)
             actions_for_stats.append(actions)
             proprios_for_stats.append(states)
             for t in range(actions.shape[0]):
@@ -312,6 +320,8 @@ class LeRobotDataset(IterableDataset):
         table = pq.read_table(_episode_parquet_path(self.data_root_dir, self.info, episode_index))
         states = np.asarray(table["observation.state"].to_pylist(), dtype=np.float32)
         actions = np.asarray(table["action"].to_pylist(), dtype=np.float32)
+        states = _select_joint_dims(states, PROPRIO_DIM, "observation.state", episode_index)
+        actions = _select_joint_dims(actions, ACTION_DIM, "action", episode_index)
         task_indices = np.asarray(table["task_index"].to_pylist(), dtype=np.int64)
         episode = {"state": states, "action": actions, "task_index": task_indices}
 

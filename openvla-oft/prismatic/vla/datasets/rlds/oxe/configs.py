@@ -37,7 +37,7 @@ class StateEncoding(IntEnum):
     POS_QUAT = 2            # EEF XYZ (3) + Quaternion (4) + Gripper Open/Close (1)
     JOINT = 3               # Joint Angles (7, <PAD> if fewer) + Gripper Open/Close (1)
     JOINT_BIMANUAL = 4      # Joint Angles (2 x [ Joint Angles (6) + Gripper Open/Close (1) ])
-    COBOT_MAGIC_STATE = 5   # 26D: 14 bimanual arm dims + left/right FK EEF xyz+rpy
+    COBOT_MAGIC_STATE = 5   # 14D: bimanual joint state, EEF xyz/rpy dropped
     # fmt: on
 
 
@@ -48,7 +48,7 @@ class ActionEncoding(IntEnum):
     JOINT_POS = 2           # Joint Delta Position (7) + Gripper Open/Close (1)
     JOINT_POS_BIMANUAL = 3  # Joint Delta Position (2 x [ Joint Delta Position (6) + Gripper Open/Close (1) ])
     EEF_R6 = 4              # EEF Delta XYZ (3) + R6 (6) + Gripper Open/Close (1)
-    COBOT_MAGIC_ABS_STATE = 5  # 26D absolute next-state target: action[t] = state[t+1]
+    COBOT_MAGIC_ABS_STATE = 5  # 14D absolute next-joint-state target: action[t] = state[t+1]
     # fmt: on
 
 

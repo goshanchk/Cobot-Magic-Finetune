@@ -2,6 +2,8 @@
 
 This repository contains fine-tuning integrations for the Cobot Magic LeRobot dataset. It keeps two model pipelines side by side so the same dataset can be tested with both OpenVLA-OFT and NVIDIA Isaac-GR00T N1.7.
 
+Current training uses only the 14D bimanual joint state/action (`all_arms`). 
+
 ## Structure
 
 ```text

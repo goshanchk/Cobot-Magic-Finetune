@@ -849,10 +849,16 @@ def aloha_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
 def cobot_magic_sber_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
     """Standardizes the local Cobot Magic Sber RLDS dataset.
 
-    The converter emits 26D absolute next-state actions and 26D proprio state
-    directly, so this transform only preserves the expected top-level language
-    key. Camera/state key selection happens in configs.py.
+    Raw trajectories may contain 26D state/action vectors:
+    14 bimanual joints + 12 FK EEF xyz/rpy coordinates. Training keeps only
+    the first 14 joint dimensions because the current ALOHA controller consumes
+    joint commands only.
     """
+    trajectory["action"] = trajectory["action"][:, :14]
+    if "state" in trajectory["observation"]:
+        trajectory["observation"]["state"] = trajectory["observation"]["state"][:, :14]
+    if "proprio" in trajectory["observation"]:
+        trajectory["observation"]["proprio"] = trajectory["observation"]["proprio"][:, :14]
     return trajectory
 
 

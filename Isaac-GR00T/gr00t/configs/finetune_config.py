@@ -105,6 +105,18 @@ class FinetuneConfig:
     dataloader_num_workers: int = 2
     """Number of parallel worker processes used for data loading."""
 
+    exclude_validation_episodes: bool = False
+    """If True, remove episodes from validation_split_path from the training sharded dataset."""
+
+    validation_split_path: str = "meta/validation_episodes.json"
+    """Path to validation episode ids, relative to dataset_path unless absolute."""
+
+    validation_episodes_target: int = 0
+    """If >0, expand validation split to this many episodes using split_seed, matching OpenVLA behavior."""
+
+    split_seed: int = 42
+    """Seed used when validation_episodes_target requires sampling extra validation episodes."""
+
     learning_rate: float = 1e-4
     """Initial learning rate for optimizer."""
 

@@ -140,6 +140,7 @@ class ShardedSingleStepDataset(ShardedDataset):
         episode_sampling_rate: float = 0.1,
         seed: int = 42,
         allow_padding: bool = False,
+        excluded_episode_indices: set[int] | None = None,
     ):
         """Initialize single-step dataset with sharding configuration."""
         super().__init__(dataset_path)
@@ -151,6 +152,7 @@ class ShardedSingleStepDataset(ShardedDataset):
         self.episode_sampling_rate = episode_sampling_rate
         self.seed = seed
         self.allow_padding = allow_padding
+        self.excluded_episode_indices = excluded_episode_indices or set()
         self.processor = None
         self.rng = np.random.default_rng(seed)
         action_delta_indices = modality_configs["action"].delta_indices
@@ -181,8 +183,19 @@ class ShardedSingleStepDataset(ShardedDataset):
         - Diversity within shards (mix of episodes and timesteps)
         - Reproducible sharding based on seed
         """
-        shuffled_episode_indices = self.rng.permutation(len(self.episode_loader.episode_lengths))
+        available_episode_indices = [
+            idx
+            for idx, meta in enumerate(self.episode_loader.episodes_metadata)
+            if int(meta["episode_index"]) not in self.excluded_episode_indices
+        ]
+        shuffled_episode_indices = self.rng.permutation(available_episode_indices)
         num_splits = int(1 / self.episode_sampling_rate)
+
+        if self.excluded_episode_indices:
+            print(
+                f"Excluded {len(self.excluded_episode_indices)} validation episodes; "
+                f"training on {len(available_episode_indices)} episodes"
+            )
 
         assert len(shuffled_episode_indices) > 0, (
             f"No valid trajectories found for dataset {self.dataset_path}"

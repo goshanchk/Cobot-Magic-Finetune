@@ -5,7 +5,7 @@ This folder contains the Isaac-GR00T N1.7 integration for the Cobot Magic LeRobo
 ## Code Map
 
 ```text
-examples/CobotMagic/cobot_magic_config.py        # Cobot Magic modality config: 3 cameras, 26D state/action
+examples/CobotMagic/cobot_magic_config.py        # Cobot Magic modality config: 3 cameras, 14D joint state/action
 gr00t/experiment/launch_finetune.py             # CLI entry point for fine-tuning
 gr00t/experiment/experiment.py                  # Trainer setup, DeepSpeed/DDP, TensorBoard/W&B logging
 gr00t/configs/finetune_config.py                # fine-tune CLI config
@@ -28,15 +28,13 @@ The current Cobot Magic config uses:
 video.cam_high
 video.cam_left_wrist
 video.cam_right_wrist
-state.all_arms      # 14D
-state.left_eef      # 6D
-state.right_eef     # 6D
-action.all_arms     # 14D
-action.left_eef     # 6D
-action.right_eef    # 6D
+state.all_arms      # 14D joints
+action.all_arms     # 14D absolute next-joint-state target
 ```
 
-Total state/action dimensionality is `26D`. `meta/stats.json` must also contain 26D state/action stats.
+The raw dataset also contains `left_eef` and `right_eef` FK xyz/rpy groups, but they are not used for training because current ALOHA control supports joint commands only.
+
+Training commands below build the same train/validation split as OpenVLA: they start from `meta/validation_episodes.json` and, if needed, sample extra hold-out episodes up to `300` with `split_seed=42`. Training excludes those hold-out episodes; offline validation evaluates the saved checkpoint on the same split.
 
 ## Environment
 
@@ -97,6 +95,10 @@ tmux new -d -s groot_cobot_projector \
    --num_shards_per_epoch 100000 \
    --episode_sampling_rate 0.1 \
    --modality_config_path examples/CobotMagic/cobot_magic_config.py \
+   --exclude-validation-episodes \
+   --validation-split-path meta/validation_episodes.json \
+   --validation-episodes-target 300 \
+   --split-seed 42 \
    --no-tune-diffusion-model \
    2>&1 | tee logs/stdout/cobot_magic_2gpu_projector_test.log"
 ```
@@ -135,7 +137,61 @@ tmux new -d -s groot_cobot_full \
    --num_shards_per_epoch 100000 \
    --episode_sampling_rate 0.1 \
    --modality_config_path examples/CobotMagic/cobot_magic_config.py \
+   --exclude-validation-episodes \
+   --validation-split-path meta/validation_episodes.json \
+   --validation-episodes-target 300 \
+   --split-seed 42 \
    2>&1 | tee logs/stdout/cobot_magic_full.log"
+```
+
+## Offline Validation
+
+The GR00T sharded training dataset does not run validation inside the training loop. In the Cobot Magic launch commands above, `--exclude-validation-episodes` removes the same 300 hold-out episodes used by OpenVLA from training. After a checkpoint is saved, use the offline validation script with the same split settings; it runs forward passes without optimizer steps and reports mean validation loss.
+
+Quick validation on a subset:
+
+```bash
+cd /path/to/Isaac-GR00T
+export DATASET_DIR=/path/to/cobot_magic_sber
+
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+.venv/bin/python examples/CobotMagic/eval_cobot_magic.py \
+  --checkpoint_path logs/outputs/cobot_magic_2gpu_projector/checkpoint-20000 \
+  --dataset_path ${DATASET_DIR} \
+  --embodiment_tag NEW_EMBODIMENT \
+  --modality_config_path examples/CobotMagic/cobot_magic_config.py \
+  --validation-episodes-target 300 \
+  --seed 42 \
+  --output_dir logs/eval/cobot_magic_checkpoint_20000 \
+  --device cuda:0 \
+  --dtype bf16 \
+  --batch_size 1 \
+  --max_episodes 30 \
+  --max_steps_per_episode 16
+```
+
+Full validation over all 300 validation episodes and all valid timesteps can be launched by disabling the limits:
+
+```bash
+.venv/bin/python examples/CobotMagic/eval_cobot_magic.py \
+  --checkpoint_path logs/outputs/cobot_magic_2gpu_projector/checkpoint-20000 \
+  --dataset_path ${DATASET_DIR} \
+  --embodiment_tag NEW_EMBODIMENT \
+  --modality_config_path examples/CobotMagic/cobot_magic_config.py \
+  --validation-episodes-target 300 \
+  --seed 42 \
+  --output_dir logs/eval/cobot_magic_checkpoint_20000_full \
+  --device cuda:0 \
+  --dtype bf16 \
+  --batch_size 1 \
+  --max_episodes 0 \
+  --max_steps_per_episode 0
+```
+
+Validation metrics are saved to:
+
+```text
+logs/eval/<run_name>/metrics.json
 ```
 
 ## Logs

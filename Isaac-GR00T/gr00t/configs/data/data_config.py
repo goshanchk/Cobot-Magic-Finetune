@@ -86,6 +86,14 @@ class DataConfig:
     multiprocessing_context: str = "fork"  # Options: "fork", "spawn", and "forkserver"
     allow_padding: bool = False
 
+    # Cobot Magic / LeRobot train-val split support. When enabled, training
+    # excludes episode ids listed in validation_split_path; offline eval can then
+    # use the same split file for a clean validation pass.
+    exclude_validation_episodes: bool = False
+    validation_split_path: str = "meta/validation_episodes.json"
+    validation_episodes_target: int = 0
+    split_seed: int = 42
+
     # Subsample ratio for the dataset
     subsample_ratio: float = 1.0
 

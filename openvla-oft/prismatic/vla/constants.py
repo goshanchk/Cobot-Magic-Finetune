@@ -41,8 +41,11 @@ ALOHA_CONSTANTS = {
 COBOT_MAGIC_CONSTANTS = {
     # Dataset is recorded at 15 Hz; 24 actions are roughly 1.6 seconds.
     "NUM_ACTIONS_CHUNK": 24,
-    "ACTION_DIM": 26,
-    "PROPRIO_DIM": 26,
+    # Use only joint-space control: left_q0..left_q6 + right_q0..right_q6.
+    # The raw dataset also contains 12 FK EEF xyz/rpy coordinates, but ALOHA
+    # control consumes joints only.
+    "ACTION_DIM": 14,
+    "PROPRIO_DIM": 14,
     # Actions are absolute next-state targets, so avoid quantile clipping.
     "ACTION_PROPRIO_NORMALIZATION_TYPE": NormalizationType.BOUNDS,
 }

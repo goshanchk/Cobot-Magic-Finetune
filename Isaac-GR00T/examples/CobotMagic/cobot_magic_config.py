@@ -15,29 +15,17 @@ cobot_magic_config = {
         delta_indices=[0],
         modality_keys=["cam_high", "cam_left_wrist", "cam_right_wrist"],
     ),
-    # 26D state split in meta/modality.json:
-    # all_arms=14D, left_eef=6D xyz+rpy, right_eef=6D xyz+rpy.
+    # Use joint-space only. The dataset also exposes FK EEF xyz/rpy groups,
+    # but current ALOHA control consumes only the 14 bimanual joint values.
     "state": ModalityConfig(
         delta_indices=[0],
-        modality_keys=["all_arms", "left_eef", "right_eef"],
+        modality_keys=["all_arms"],
     ),
-    # Start with ABSOLUTE/NON_EEF for all groups because the dataset stores
-    # action[t] = observation.state[t+1], and EEF rotations are euler_xyz rather
-    # than GR00T's XYZ_ROT6D / XYZ_ROTVEC EEF formats.
+    # action.all_arms stores absolute next-joint-state targets.
     "action": ModalityConfig(
         delta_indices=list(range(16)),
-        modality_keys=["all_arms", "left_eef", "right_eef"],
+        modality_keys=["all_arms"],
         action_configs=[
-            ActionConfig(
-                rep=ActionRepresentation.ABSOLUTE,
-                type=ActionType.NON_EEF,
-                format=ActionFormat.DEFAULT,
-            ),
-            ActionConfig(
-                rep=ActionRepresentation.ABSOLUTE,
-                type=ActionType.NON_EEF,
-                format=ActionFormat.DEFAULT,
-            ),
             ActionConfig(
                 rep=ActionRepresentation.ABSOLUTE,
                 type=ActionType.NON_EEF,
