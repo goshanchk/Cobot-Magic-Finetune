@@ -219,7 +219,10 @@ def main() -> None:
     start = time.time()
 
     def flush_batch(samples: list[dict]) -> float:
-        batch = collator(samples)
+        # The GR00T collator returns BatchFeature({"inputs": batch}); the model
+        # forward expects the inner batch directly. Passing the wrapper would hide
+        # input_ids/pixel_values under an extra `inputs` key and break Qwen input prep.
+        batch = collator(samples)["inputs"]
         batch = to_device(batch, device)
         with torch.no_grad():
             with torch.autocast(device_type=device.type, dtype=dtype, enabled=device.type == "cuda" and dtype != torch.float32):

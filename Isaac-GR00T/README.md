@@ -156,13 +156,13 @@ export DATASET_DIR=/path/to/cobot_magic_sber
 
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 .venv/bin/python examples/CobotMagic/eval_cobot_magic.py \
-  --checkpoint_path logs/outputs/cobot_magic_2gpu_projector/checkpoint-20000 \
+  --checkpoint_path logs/outputs/cobot_magic_full/checkpoint-20000 \
   --dataset_path ${DATASET_DIR} \
   --embodiment_tag NEW_EMBODIMENT \
   --modality_config_path examples/CobotMagic/cobot_magic_config.py \
-  --validation-episodes-target 300 \
+  --validation_episodes_target 300 \
   --seed 42 \
-  --output_dir logs/eval/cobot_magic_checkpoint_20000 \
+  --output_dir logs/eval/cobot_magic_full_checkpoint_20000 \
   --device cuda:0 \
   --dtype bf16 \
   --batch_size 1 \
@@ -174,13 +174,13 @@ Full validation over all 300 validation episodes and all valid timesteps can be 
 
 ```bash
 .venv/bin/python examples/CobotMagic/eval_cobot_magic.py \
-  --checkpoint_path logs/outputs/cobot_magic_2gpu_projector/checkpoint-20000 \
+  --checkpoint_path logs/outputs/cobot_magic_full/checkpoint-20000 \
   --dataset_path ${DATASET_DIR} \
   --embodiment_tag NEW_EMBODIMENT \
   --modality_config_path examples/CobotMagic/cobot_magic_config.py \
-  --validation-episodes-target 300 \
+  --validation_episodes_target 300 \
   --seed 42 \
-  --output_dir logs/eval/cobot_magic_checkpoint_20000_full \
+  --output_dir logs/eval/cobot_magic_full_checkpoint_20000_full \
   --device cuda:0 \
   --dtype bf16 \
   --batch_size 1 \
@@ -199,14 +199,17 @@ logs/eval/<run_name>/metrics.json
 Stdout:
 
 ```bash
-tail -f logs/stdout/cobot_magic_2gpu_projector_test.log
+cd /path/to/Isaac-GR00T
+export RUN_NAME=cobot_magic_full
+tail -f logs/stdout/${RUN_NAME}.log
 ```
 
 TensorBoard:
 
 ```bash
 cd /path/to/Isaac-GR00T
-.venv/bin/tensorboard --logdir logs/outputs/cobot_magic_2gpu_projector_test/tensorboard --host 0.0.0.0 --port 6006
+export RUN_NAME=cobot_magic_full
+.venv/bin/tensorboard --logdir logs/outputs/${RUN_NAME}/tensorboard --host 0.0.0.0 --port 6006
 ```
 
 Tmux:
