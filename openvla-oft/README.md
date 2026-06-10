@@ -27,6 +27,10 @@ Important launch args:
 --action_head_hidden_dim N
 --action_head_num_blocks N
 --logger tensorboard|wandb|none
+--dataloader_num_workers N
+--lerobot_use_precomputed_stats True|False
+--lerobot_sample_by_episode True|False
+--lerobot_episode_cache_size N
 ```
 
 ## Dataset
@@ -74,6 +78,14 @@ The direct LeRobot backend uses this split:
 train: 7041 episodes
 val:   300 episodes
 split_seed: 42
+```
+
+Performance notes for the direct LeRobot backend:
+
+```text
+lerobot_use_precomputed_stats=True  uses meta/stats.json sliced to 14D joints; avoids scanning all parquet at startup
+lerobot_sample_by_episode=True      shuffles episodes first, then timesteps; reuses decoded video cache
+dataloader_num_workers>0            lets CPU workers prepare video batches while GPU is training
 ```
 
 ## Environment
@@ -204,6 +216,10 @@ For n-GPU node, expose n GPUs and use `--nproc-per-node n`, n is the number of G
 tmux new -d -s openvla_full_train \
   "cd ${REPO_ROOT} && \
    CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+   NCCL_DEBUG=INFO \
+   TORCH_NCCL_ASYNC_ERROR_HANDLING=1 \
+   CUDA_DEVICE_MAX_CONNECTIONS=1 \
    micromamba run -n finetune_env torchrun \
    --standalone --nnodes 1 --nproc-per-node 8 \
    vla-scripts/finetune.py \
@@ -222,12 +238,12 @@ tmux new -d -s openvla_full_train \
    --batch_size 1 \
    --grad_accumulation_steps 8 \
    --learning_rate 5e-4 \
-   --num_steps_before_decay 100000 \
-   --max_steps 200000 \
+   --num_steps_before_decay 10000 \
+   --max_steps 20000 \
    --use_val_set True \
    --val_freq 1000 \
    --val_time_limit 180 \
-   --save_freq 5000 \
+   --save_freq 2000 \
    --image_aug True \
    --lora_rank 8 \
    --action_head_hidden_dim 2048 \
@@ -235,7 +251,12 @@ tmux new -d -s openvla_full_train \
    --logger tensorboard \
    --log_freq 10 \
    --shuffle_buffer_size 100000 \
-   --run_id_note full--3cam--film--chunk24--lora8--h2048 \
+   --dataloader_num_workers 2 \
+   --dataloader_prefetch_factor 2 \
+   --lerobot_episode_cache_size 4 \
+   --lerobot_use_precomputed_stats True \
+   --lerobot_sample_by_episode True \
+   --run_id_note full--3cam--film--chunk24--joints14--lora8--h2048--fastloader \
    2>&1 | tee logs/stdout/openvla_full_train.log"
 ```
 

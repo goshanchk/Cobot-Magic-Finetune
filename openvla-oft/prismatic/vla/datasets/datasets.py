@@ -156,6 +156,27 @@ def _stats_dict(values: np.ndarray) -> Dict[str, Any]:
     }
 
 
+def _slice_stats(stats: Dict[str, Any], target_dim: int) -> Dict[str, Any]:
+    return {key: list(value[:target_dim]) for key, value in stats.items()}
+
+
+def _load_precomputed_lerobot_statistics(
+    dataset_dir: Path,
+    dataset_name: str,
+    num_transitions: int,
+    num_trajectories: int,
+) -> Dict[str, Any]:
+    stats = _load_json(dataset_dir / "meta" / "stats.json")
+    return {
+        dataset_name: {
+            "action": _slice_stats(stats["action"], ACTION_DIM),
+            "proprio": _slice_stats(stats["observation.state"], PROPRIO_DIM),
+            "num_transitions": num_transitions,
+            "num_trajectories": num_trajectories,
+        }
+    }
+
+
 def _select_joint_dims(values: np.ndarray, target_dim: int, field_name: str, episode_index: int) -> np.ndarray:
     if values.ndim != 2:
         raise ValueError(f"Expected {field_name} shape [T, D], got {values.shape} for episode {episode_index}")
@@ -260,6 +281,8 @@ class LeRobotDataset(IterableDataset):
         split_seed: int = 42,
         episode_cache_size: int = 2,
         normalization_statistics: Dict[str, Any] | None = None,
+        use_precomputed_stats: bool = True,
+        sample_by_episode: bool = True,
     ) -> None:
         if dataset_name != "cobot_magic_sber":
             raise ValueError(f"LeRobotDataset currently supports only cobot_magic_sber, got {dataset_name}")
@@ -276,33 +299,42 @@ class LeRobotDataset(IterableDataset):
         self.episode_indices = _make_lerobot_splits(self.data_root_dir, train, val_episodes_target, split_seed)
         self._episode_cache: OrderedDict[int, Dict[str, np.ndarray]] = OrderedDict()
         self.episode_cache_size = episode_cache_size
+        self.sample_by_episode = sample_by_episode
 
+        episodes_by_index = {int(row["episode_index"]): int(row["length"]) for row in _load_jsonl(self.data_root_dir / "meta" / "episodes.jsonl")}
+        self.transitions_by_episode: Dict[int, List[int]] = {}
         self.transition_indices: List[Tuple[int, int]] = []
-        actions_for_stats, proprios_for_stats = [], []
         for episode_index in self.episode_indices:
-            table = pq.read_table(_episode_parquet_path(self.data_root_dir, self.info, episode_index))
-            actions = np.asarray(table["action"].to_pylist(), dtype=np.float32)
-            states = np.asarray(table["observation.state"].to_pylist(), dtype=np.float32)
-            actions = _select_joint_dims(actions, ACTION_DIM, "action", episode_index)
-            states = _select_joint_dims(states, PROPRIO_DIM, "observation.state", episode_index)
-            actions_for_stats.append(actions)
-            proprios_for_stats.append(states)
-            for t in range(actions.shape[0]):
-                self.transition_indices.append((episode_index, t))
+            length = episodes_by_index[episode_index]
+            steps = list(range(length))
+            self.transitions_by_episode[episode_index] = steps
+            self.transition_indices.extend((episode_index, t) for t in steps)
 
-        all_actions = np.concatenate(actions_for_stats, axis=0)
-        all_proprios = np.concatenate(proprios_for_stats, axis=0)
-        if normalization_statistics is None:
+        if normalization_statistics is not None:
+            self.dataset_statistics = normalization_statistics
+        elif use_precomputed_stats:
+            self.dataset_statistics = _load_precomputed_lerobot_statistics(
+                self.data_root_dir,
+                dataset_name,
+                len(self.transition_indices),
+                len(self.episode_indices),
+            )
+        else:
+            actions_for_stats, proprios_for_stats = [], []
+            for episode_index in self.episode_indices:
+                table = pq.read_table(_episode_parquet_path(self.data_root_dir, self.info, episode_index))
+                actions = np.asarray(table["action"].to_pylist(), dtype=np.float32)
+                states = np.asarray(table["observation.state"].to_pylist(), dtype=np.float32)
+                actions_for_stats.append(_select_joint_dims(actions, ACTION_DIM, "action", episode_index))
+                proprios_for_stats.append(_select_joint_dims(states, PROPRIO_DIM, "observation.state", episode_index))
             self.dataset_statistics = {
                 dataset_name: {
-                    "action": _stats_dict(all_actions),
-                    "proprio": _stats_dict(all_proprios),
+                    "action": _stats_dict(np.concatenate(actions_for_stats, axis=0)),
+                    "proprio": _stats_dict(np.concatenate(proprios_for_stats, axis=0)),
                     "num_transitions": len(self.transition_indices),
                     "num_trajectories": len(self.episode_indices),
                 }
             }
-        else:
-            self.dataset_statistics = normalization_statistics
         stats = self.dataset_statistics[dataset_name]
         self.action_low = np.asarray(stats["action"]["min"], dtype=np.float32)
         self.action_high = np.asarray(stats["action"]["max"], dtype=np.float32)
@@ -380,14 +412,26 @@ class LeRobotDataset(IterableDataset):
 
         epoch = 0
         while True:
-            indices = list(range(len(self.transition_indices)))
-            if self.train:
-                rng = random.Random(17 + epoch)
-                rng.shuffle(indices)
-            indices = indices[rank::world_size]
-            for idx in indices:
-                episode_index, t = self.transition_indices[idx]
-                yield self.batch_transform(self._make_sample(episode_index, t))
+            rng = random.Random(17 + epoch)
+            if self.sample_by_episode:
+                episode_indices = list(self.episode_indices)
+                if self.train:
+                    rng.shuffle(episode_indices)
+                episode_indices = episode_indices[rank::world_size]
+                for episode_index in episode_indices:
+                    steps = list(self.transitions_by_episode[episode_index])
+                    if self.train:
+                        rng.shuffle(steps)
+                    for t in steps:
+                        yield self.batch_transform(self._make_sample(episode_index, t))
+            else:
+                indices = list(range(len(self.transition_indices)))
+                if self.train:
+                    rng.shuffle(indices)
+                indices = indices[rank::world_size]
+                for idx in indices:
+                    episode_index, t = self.transition_indices[idx]
+                    yield self.batch_transform(self._make_sample(episode_index, t))
             if not self.train:
                 break
             epoch += 1

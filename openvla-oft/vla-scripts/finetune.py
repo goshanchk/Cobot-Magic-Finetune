@@ -101,6 +101,11 @@ class FinetuneConfig:
     dataset_format: str = "rlds"                     # Dataset backend: rlds or lerobot
     run_root_dir: Path = Path("runs")                # Path to directory to store logs & checkpoints
     shuffle_buffer_size: int = 100_000               # Dataloader shuffle buffer size (can reduce if OOM errors occur)
+    dataloader_num_workers: int = 0                  # PyTorch DataLoader workers; useful for direct LeRobot video loading
+    dataloader_prefetch_factor: int = 2              # Prefetch batches per worker when dataloader_num_workers > 0
+    lerobot_episode_cache_size: int = 2              # Number of decoded LeRobot episodes cached per rank/worker
+    lerobot_use_precomputed_stats: bool = True       # Use meta/stats.json sliced to ACTION_DIM/PROPRIO_DIM instead of scanning parquet
+    lerobot_sample_by_episode: bool = True           # Yield shuffled episodes then timesteps to reuse decoded video cache
 
     # Algorithm and architecture
     use_l1_regression: bool = True                   # If True, trains continuous action head with L1 regression objective
@@ -1174,6 +1179,9 @@ def finetune(cfg: FinetuneConfig) -> None:
             batch_transform,
             train=True,
             num_images_in_input=cfg.num_images_in_input,
+            episode_cache_size=cfg.lerobot_episode_cache_size,
+            use_precomputed_stats=cfg.lerobot_use_precomputed_stats,
+            sample_by_episode=cfg.lerobot_sample_by_episode,
         )
         if cfg.use_val_set:
             val_dataset = LeRobotDataset(
@@ -1182,7 +1190,10 @@ def finetune(cfg: FinetuneConfig) -> None:
                 batch_transform,
                 train=False,
                 num_images_in_input=cfg.num_images_in_input,
+                episode_cache_size=cfg.lerobot_episode_cache_size,
                 normalization_statistics=train_dataset.dataset_statistics,
+                use_precomputed_stats=cfg.lerobot_use_precomputed_stats,
+                sample_by_episode=True,
             )
     else:
         raise ValueError(f"Unsupported dataset_format `{cfg.dataset_format}`. Choose from: rlds, lerobot.")
@@ -1195,22 +1206,29 @@ def finetune(cfg: FinetuneConfig) -> None:
     collator = PaddedCollatorForActionPrediction(
         processor.tokenizer.model_max_length, processor.tokenizer.pad_token_id, padding_side="right"
     )
-    dataloader = DataLoader(
-        train_dataset,
+    dataloader_num_workers = cfg.dataloader_num_workers if cfg.dataset_format == "lerobot" else 0
+    dataloader_kwargs = dict(
         batch_size=cfg.batch_size,
         sampler=None,
         collate_fn=collator,
-        num_workers=0,  # Important: Set to 0 if using RLDS, which uses its own parallelism
+        num_workers=dataloader_num_workers,
+        persistent_workers=dataloader_num_workers > 0,
     )
+    if dataloader_num_workers > 0:
+        dataloader_kwargs["prefetch_factor"] = cfg.dataloader_prefetch_factor
+    dataloader = DataLoader(train_dataset, **dataloader_kwargs)
     if cfg.use_val_set:
         val_batch_size = cfg.batch_size
-        val_dataloader = DataLoader(
-            val_dataset,
+        val_dataloader_kwargs = dict(
             batch_size=val_batch_size,
             sampler=None,
             collate_fn=collator,
-            num_workers=0,  # Important: Set to 0 if using RLDS, which uses its own parallelism
+            num_workers=dataloader_num_workers,
+            persistent_workers=dataloader_num_workers > 0,
         )
+        if dataloader_num_workers > 0:
+            val_dataloader_kwargs["prefetch_factor"] = cfg.dataloader_prefetch_factor
+        val_dataloader = DataLoader(val_dataset, **val_dataloader_kwargs)
 
     # Deque to store recent train metrics (used for computing smoothened metrics for gradient accumulation)
     recent_metrics = {
