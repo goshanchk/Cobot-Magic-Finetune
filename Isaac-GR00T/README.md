@@ -195,6 +195,32 @@ Validation metrics are saved to:
 logs/eval/<run_name>/metrics.json
 ```
 
+## Logs
+
+Stdout:
+
+```bash
+cd /path/to/Isaac-GR00T
+export RUN_NAME=cobot_magic_full
+tail -f logs/stdout/${RUN_NAME}.log
+```
+
+TensorBoard:
+
+```bash
+cd /path/to/Isaac-GR00T
+export RUN_NAME=cobot_magic_full
+.venv/bin/tensorboard --logdir logs/outputs/${RUN_NAME}/tensorboard --host 0.0.0.0 --port 6006
+```
+
+Tmux:
+
+```bash
+tmux ls
+tmux attach -t groot_cobot_projector
+# detach without stopping: Ctrl-b, then d
+```
+
 ## Inference: ZeroMQ Server
 
 The robot client uses a ZeroMQ `REQ` socket and expects a server-side `REP` socket. The GR00T adapter listens on `0.0.0.0:5055`, receives 3 JPEG-base64 cameras plus a 14D joint proprio vector, and returns absolute joint actions with shape `[num_actions, 14]`.
@@ -228,29 +254,3 @@ CUDA_VISIBLE_DEVICES=0 \
 ```
 
 Use `--relative_actions` only if a checkpoint returns delta actions; the Cobot Magic joint-only checkpoints are trained to return absolute joint targets.
-
-## Logs
-
-Stdout:
-
-```bash
-cd /path/to/Isaac-GR00T
-export RUN_NAME=cobot_magic_full
-tail -f logs/stdout/${RUN_NAME}.log
-```
-
-TensorBoard:
-
-```bash
-cd /path/to/Isaac-GR00T
-export RUN_NAME=cobot_magic_full
-.venv/bin/tensorboard --logdir logs/outputs/${RUN_NAME}/tensorboard --host 0.0.0.0 --port 6006
-```
-
-Tmux:
-
-```bash
-tmux ls
-tmux attach -t groot_cobot_projector
-# detach without stopping: Ctrl-b, then d
-```

@@ -61,6 +61,7 @@ dependencies = [
     "pyarrow",
     "uvicorn",
     "fastapi",
+    "pyzmq",
     "json-numpy",
 ]
 
