@@ -3014,6 +3014,7 @@ scipy-dep = [
 smolvla = [
     { name = "accelerate" },
     { name = "num2words" },
+    { name = "pyzmq" },
     { name = "transformers" },
 ]
 test = [
@@ -3176,6 +3177,7 @@ requires-dist = [
     { name = "lerobot", extras = ["pyserial-dep"], marker = "extra == 'hardware'" },
     { name = "lerobot", extras = ["pyserial-dep"], marker = "extra == 'unitree-g1'" },
     { name = "lerobot", extras = ["pyzmq-dep"], marker = "extra == 'lekiwi'" },
+    { name = "lerobot", extras = ["pyzmq-dep"], marker = "extra == 'smolvla'" },
     { name = "lerobot", extras = ["pyzmq-dep"], marker = "extra == 'unitree-g1'" },
     { name = "lerobot", extras = ["qwen-vl-utils-dep"], marker = "extra == 'eo1'" },
     { name = "lerobot", extras = ["qwen-vl-utils-dep"], marker = "extra == 'robometer'" },

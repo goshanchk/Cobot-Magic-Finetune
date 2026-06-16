@@ -176,5 +176,5 @@ outputs/
 *.urdf
 *.xml
 *.part
-
-lerobot/.git_backup/
+logs_smolvla/
+smolvla_install.log

@@ -13,6 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import copy
 import logging
 from pprint import pformat
 
@@ -29,6 +30,69 @@ from .lerobot_dataset import LeRobotDataset
 from .multi_dataset import MultiLeRobotDataset
 from .streaming_dataset import StreamingLeRobotDataset
 
+
+
+class _JointOnlyMeta:
+    def __init__(self, meta, joint_dim: int):
+        self._meta = meta
+        self._features = copy.deepcopy(meta.features)
+        self._stats = copy.deepcopy(meta.stats)
+        self._joint_dim = joint_dim
+        self._slice_feature(ACTION)
+        self._slice_feature("observation.state")
+        self._slice_stats(ACTION)
+        self._slice_stats("observation.state")
+
+    def _slice_feature(self, key: str) -> None:
+        if key not in self._features:
+            return
+        feature = self._features[key]
+        shape = list(feature.get("shape", []))
+        if len(shape) == 1 and shape[0] > self._joint_dim:
+            feature["shape"] = [self._joint_dim]
+        names = feature.get("names")
+        if isinstance(names, list) and len(names) > self._joint_dim:
+            feature["names"] = names[: self._joint_dim]
+
+    def _slice_stats(self, key: str) -> None:
+        if key not in self._stats:
+            return
+        for stat_name, value in list(self._stats[key].items()):
+            if torch.is_tensor(value) and value.ndim >= 1 and value.shape[-1] > self._joint_dim:
+                self._stats[key][stat_name] = value[..., : self._joint_dim]
+            elif isinstance(value, list) and len(value) > self._joint_dim:
+                self._stats[key][stat_name] = value[: self._joint_dim]
+
+    @property
+    def features(self):
+        return self._features
+
+    @property
+    def stats(self):
+        return self._stats
+
+    def __getattr__(self, name):
+        return getattr(self._meta, name)
+
+
+class JointOnlyDataset(torch.utils.data.Dataset):
+    def __init__(self, dataset, joint_dim: int):
+        self.dataset = dataset
+        self.joint_dim = joint_dim
+        self.meta = _JointOnlyMeta(dataset.meta, joint_dim)
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        item = self.dataset[idx]
+        for key in (ACTION, "observation.state"):
+            if key in item:
+                item[key] = item[key][..., : self.joint_dim]
+        return item
+
+    def __getattr__(self, name):
+        return getattr(self.dataset, name)
 
 def resolve_delta_timestamps(
     cfg: PreTrainedConfig | RewardModelConfig, ds_meta: LeRobotDatasetMetadata
@@ -128,5 +192,8 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         for key in dataset.meta.camera_keys:
             for stats_type, stats in IMAGENET_STATS.items():
                 dataset.meta.stats[key][stats_type] = torch.tensor(stats, dtype=torch.float32)
+
+    if cfg.dataset.joint_only_dim is not None:
+        dataset = JointOnlyDataset(dataset, cfg.dataset.joint_only_dim)
 
     return dataset

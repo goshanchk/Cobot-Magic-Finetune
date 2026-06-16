@@ -39,6 +39,9 @@ class DatasetConfig:
     # This reduces memory and speeds up DataLoader IPC. The training pipeline handles the conversion.
     return_uint8: bool = False
     streaming: bool = False
+    # If set, keep only the first N dimensions of observation.state and action at training time.
+    # This is useful for datasets that store joints followed by auxiliary FK/EEF coordinates.
+    joint_only_dim: int | None = None
 
     def __post_init__(self) -> None:
         if self.episodes is not None:
