@@ -13,6 +13,7 @@ prismatic/vla/datasets/__init__.py                         # dataset exports
 prismatic/vla/datasets/rlds/oxe/*.py                       # optional RLDS/OXE registration
 prismatic/models/action_heads.py                           # L1 action head forward + configurable size
 vla-scripts/finetune.py                                    # dataset_format, FSDP, logging, freeze_vla, head size args
+vla-scripts/cobot_openvlaoft_zmq.py                        # ZeroMQ inference server for the ALOHA client protocol
 ```
 
 Important launch args:
@@ -291,4 +292,43 @@ tmux ls
 tmux attach -t openvla_full_train
 # detach without stopping: Ctrl-b, then d
 ```
+
+## Inference: ZeroMQ Server
+
+The robot client uses a ZeroMQ `REQ` socket and expects a server-side `REP` socket. The OpenVLA-OFT adapter listens on `0.0.0.0:5055`, receives 3 JPEG-base64 cameras plus a 14D joint proprio vector, and returns absolute joint actions with shape `[num_actions, 14]`.
+
+Checkpoint layout expected by the loader:
+
+```text
+/path/to/openvla_20000_chkpt/
+  lora_adapter/
+  action_head--20000_checkpoint.pt
+  proprio_projector--20000_checkpoint.pt
+  vision_backbone--20000_checkpoint.pt
+  dataset_statistics.json
+  config.json
+  model-*.safetensors
+```
+
+Run from the OpenVLA-OFT repo root:
+
+```bash
+cd /path/to/openvla-oft
+export OPENVLA_CHECKPOINT=/path/to/openvla_20000_chkpt
+
+CUDA_VISIBLE_DEVICES=0 \
+micromamba run -n finetune_env python vla-scripts/cobot_openvlaoft_zmq.py \
+  --pretrained_checkpoint ${OPENVLA_CHECKPOINT} \
+  --unnorm_key cobot_magic_sber \
+  --use_l1_regression True \
+  --use_diffusion False \
+  --use_film True \
+  --num_images_in_input 3 \
+  --use_proprio True \
+  --lora_rank 8 \
+  --host 0.0.0.0 \
+  --port 5055
+```
+
+Use `--use_film False` only for checkpoints trained without FiLM. Use `--use_relative_actions True` only if the checkpoint returns delta actions; the Cobot Magic joint-only checkpoints are trained to return absolute joint targets.
 

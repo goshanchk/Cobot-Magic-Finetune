@@ -6,6 +6,7 @@ This folder contains the Isaac-GR00T N1.7 integration for the Cobot Magic LeRobo
 
 ```text
 examples/CobotMagic/cobot_magic_config.py        # Cobot Magic modality config: 3 cameras, 14D joint state/action
+examples/CobotMagic/cobot_groot_zmq.py           # ZeroMQ inference server for the ALOHA client protocol
 gr00t/experiment/launch_finetune.py             # CLI entry point for fine-tuning
 gr00t/experiment/experiment.py                  # Trainer setup, DeepSpeed/DDP, TensorBoard/W&B logging
 gr00t/configs/finetune_config.py                # fine-tune CLI config
@@ -156,13 +157,13 @@ export DATASET_DIR=/path/to/cobot_magic_sber
 
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 .venv/bin/python examples/CobotMagic/eval_cobot_magic.py \
-  --checkpoint_path logs/outputs/cobot_magic_2gpu_projector/checkpoint-20000 \
+  --checkpoint_path logs/outputs/cobot_magic_full/checkpoint-20000 \
   --dataset_path ${DATASET_DIR} \
   --embodiment_tag NEW_EMBODIMENT \
   --modality_config_path examples/CobotMagic/cobot_magic_config.py \
-  --validation-episodes-target 300 \
+  --validation_episodes_target 300 \
   --seed 42 \
-  --output_dir logs/eval/cobot_magic_checkpoint_20000 \
+  --output_dir logs/eval/cobot_magic_full_checkpoint_20000 \
   --device cuda:0 \
   --dtype bf16 \
   --batch_size 1 \
@@ -174,13 +175,13 @@ Full validation over all 300 validation episodes and all valid timesteps can be 
 
 ```bash
 .venv/bin/python examples/CobotMagic/eval_cobot_magic.py \
-  --checkpoint_path logs/outputs/cobot_magic_2gpu_projector/checkpoint-20000 \
+  --checkpoint_path logs/outputs/cobot_magic_full/checkpoint-20000 \
   --dataset_path ${DATASET_DIR} \
   --embodiment_tag NEW_EMBODIMENT \
   --modality_config_path examples/CobotMagic/cobot_magic_config.py \
-  --validation-episodes-target 300 \
+  --validation_episodes_target 300 \
   --seed 42 \
-  --output_dir logs/eval/cobot_magic_checkpoint_20000_full \
+  --output_dir logs/eval/cobot_magic_full_checkpoint_20000_full \
   --device cuda:0 \
   --dtype bf16 \
   --batch_size 1 \
@@ -194,19 +195,56 @@ Validation metrics are saved to:
 logs/eval/<run_name>/metrics.json
 ```
 
+## Inference: ZeroMQ Server
+
+The robot client uses a ZeroMQ `REQ` socket and expects a server-side `REP` socket. The GR00T adapter listens on `0.0.0.0:5055`, receives 3 JPEG-base64 cameras plus a 14D joint proprio vector, and returns absolute joint actions with shape `[num_actions, 14]`.
+
+Checkpoint layout expected by `Gr00tPolicy`:
+
+```text
+/path/to/gr00t_checkpoint-35000/
+  config.json
+  embodiment_id.json
+  processor_config.json
+  statistics.json
+  model-*.safetensors
+  model.safetensors.index.json
+```
+
+Run from the Isaac-GR00T repo root:
+
+```bash
+cd /path/to/Isaac-GR00T
+export GROOT_CHECKPOINT=/path/to/gr00t_checkpoint-35000
+
+CUDA_VISIBLE_DEVICES=0 \
+.venv/bin/python examples/CobotMagic/cobot_groot_zmq.py \
+  --model_path ${GROOT_CHECKPOINT} \
+  --embodiment_tag new_embodiment \
+  --modality_config_path examples/CobotMagic/cobot_magic_config.py \
+  --device cuda:0 \
+  --host 0.0.0.0 \
+  --port 5055
+```
+
+Use `--relative_actions` only if a checkpoint returns delta actions; the Cobot Magic joint-only checkpoints are trained to return absolute joint targets.
+
 ## Logs
 
 Stdout:
 
 ```bash
-tail -f logs/stdout/cobot_magic_2gpu_projector_test.log
+cd /path/to/Isaac-GR00T
+export RUN_NAME=cobot_magic_full
+tail -f logs/stdout/${RUN_NAME}.log
 ```
 
 TensorBoard:
 
 ```bash
 cd /path/to/Isaac-GR00T
-.venv/bin/tensorboard --logdir logs/outputs/cobot_magic_2gpu_projector_test/tensorboard --host 0.0.0.0 --port 6006
+export RUN_NAME=cobot_magic_full
+.venv/bin/tensorboard --logdir logs/outputs/${RUN_NAME}/tensorboard --host 0.0.0.0 --port 6006
 ```
 
 Tmux:
