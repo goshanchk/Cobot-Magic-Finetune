@@ -489,7 +489,14 @@ def get_action_head(cfg: Any, llm_dim: int) -> Union[L1RegressionActionHead, Dif
 
     # Initialize appropriate action head based on configuration
     if cfg.use_l1_regression:
-        action_head = L1RegressionActionHead(input_dim=llm_dim, hidden_dim=llm_dim, action_dim=ACTION_DIM)
+        action_head_hidden_dim = getattr(cfg, "action_head_hidden_dim", None) or llm_dim
+        action_head_num_blocks = getattr(cfg, "action_head_num_blocks", 1)
+        action_head = L1RegressionActionHead(
+            input_dim=llm_dim,
+            hidden_dim=action_head_hidden_dim,
+            action_dim=ACTION_DIM,
+            num_blocks=action_head_num_blocks,
+        )
     elif cfg.use_diffusion:
         action_head = DiffusionActionHead(
             input_dim=llm_dim, hidden_dim=llm_dim, action_dim=ACTION_DIM, num_diffusion_steps_train=cfg.num_diffusion_steps_train

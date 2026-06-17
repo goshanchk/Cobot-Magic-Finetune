@@ -6,8 +6,6 @@ Protocol:
 - returns {"actions": [[...14 floats...], ...]} with absolute joint targets
 """
 
-from __future__ import annotations
-
 import base64
 import io
 import json
@@ -146,6 +144,8 @@ class OpenVLAOFTZMQConfig:
     use_film: bool = False
     num_images_in_input: int = 3
     use_proprio: bool = True
+    action_head_hidden_dim: int | None = None
+    action_head_num_blocks: int = 1
     center_crop: bool = True
     lora_rank: int = 32
     unnorm_key: Union[str, Path] = ""
