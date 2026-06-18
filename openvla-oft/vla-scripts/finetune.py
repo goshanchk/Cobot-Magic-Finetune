@@ -86,6 +86,14 @@ def save_training_dataset_statistics(dataset_statistics, output_dir):
         json.dump(_json_safe(dataset_statistics), f_json, indent=2)
     print(f"Saved dataset statistics file at path {out_path}")
 
+
+def _move_to_cuda(tensor: torch.Tensor, device_id: int, dtype: Optional[torch.dtype] = None) -> torch.Tensor:
+    device = torch.device("cuda", device_id)
+    if dtype is None:
+        return tensor.to(device=device, non_blocking=True)
+    return tensor.to(device=device, dtype=dtype, non_blocking=True)
+
+
 # Sane Defaults
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -103,6 +111,7 @@ class FinetuneConfig:
     shuffle_buffer_size: int = 100_000               # Dataloader shuffle buffer size (can reduce if OOM errors occur)
     dataloader_num_workers: int = 0                  # PyTorch DataLoader workers; useful for direct LeRobot video loading
     dataloader_prefetch_factor: int = 2              # Prefetch batches per worker when dataloader_num_workers > 0
+    dataloader_pin_memory: bool = True               # Pin CPU batches so H2D copies can overlap with GPU work
     lerobot_episode_cache_size: int = 2              # Number of decoded LeRobot episodes cached per rank/worker
     lerobot_use_precomputed_stats: bool = True       # Use meta/stats.json sliced to ACTION_DIM/PROPRIO_DIM instead of scanning parquet
     lerobot_sample_by_episode: bool = True           # Yield shuffled episodes then timesteps to reuse decoded video cache
@@ -421,8 +430,14 @@ def run_forward_pass(
     """
     metrics = {}
 
+    input_ids = _move_to_cuda(batch["input_ids"], device_id)
+    attention_mask = _move_to_cuda(batch["attention_mask"], device_id)
+    labels = _move_to_cuda(batch["labels"], device_id)
+    pixel_values = _move_to_cuda(batch["pixel_values"], device_id, torch.bfloat16)
+    proprio = _move_to_cuda(batch["proprio"], device_id, torch.bfloat16) if use_proprio else None
+
     # Get ground-truth action labels
-    ground_truth_actions = batch["actions"].to(device_id).to(torch.bfloat16)
+    ground_truth_actions = _move_to_cuda(batch["actions"], device_id, torch.bfloat16)
 
     # [Only for diffusion] Sample noisy actions used as input for noise predictor network
     if use_diffusion:
@@ -440,12 +455,12 @@ def run_forward_pass(
     with grad_context:
         with torch.autocast("cuda", dtype=torch.bfloat16):
             output: CausalLMOutputWithPast = vla(
-                input_ids=batch["input_ids"].to(device_id),
-                attention_mask=batch["attention_mask"].to(device_id),
-                pixel_values=batch["pixel_values"].to(torch.bfloat16).to(device_id),
-                labels=batch["labels"].to(device_id),
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                pixel_values=pixel_values,
+                labels=labels,
                 output_hidden_states=True,
-                proprio=batch["proprio"].to(device_id).to(torch.bfloat16) if use_proprio else None,
+                proprio=proprio,
                 proprio_projector=proprio_projector if use_proprio else None,
                 noisy_actions=noisy_actions if use_diffusion else None,
                 noisy_action_projector=noisy_action_projector if use_diffusion else None,
@@ -454,7 +469,7 @@ def run_forward_pass(
             )
 
     # Get action masks needed for logging
-    ground_truth_token_ids = batch["labels"][:, 1:].to(device_id)
+    ground_truth_token_ids = labels[:, 1:]
     current_action_mask = get_current_action_mask(ground_truth_token_ids)
     next_actions_mask = get_next_actions_mask(ground_truth_token_ids)
 
@@ -591,6 +606,12 @@ def run_diffusion_sampling(
     Returns:
         torch.Tensor: Predicted actions.
     """
+    input_ids = _move_to_cuda(batch["input_ids"], device_id)
+    attention_mask = _move_to_cuda(batch["attention_mask"], device_id)
+    labels = _move_to_cuda(batch["labels"], device_id)
+    pixel_values = _move_to_cuda(batch["pixel_values"], device_id, torch.bfloat16)
+    proprio = _move_to_cuda(batch["proprio"], device_id, torch.bfloat16) if use_proprio else None
+
     # Sample random noisy action, used as the starting point for reverse diffusion
     noise = torch.randn(
         size=(batch_size, NUM_ACTIONS_CHUNK, ACTION_DIM),
@@ -614,12 +635,12 @@ def run_diffusion_sampling(
 
         with torch.autocast("cuda", dtype=torch.bfloat16):
             output = vla(
-                input_ids=batch["input_ids"].to(device_id),
-                attention_mask=batch["attention_mask"].to(device_id),
-                pixel_values=batch["pixel_values"].to(torch.bfloat16).to(device_id),
-                labels=batch["labels"].to(device_id),
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                pixel_values=pixel_values,
+                labels=labels,
                 output_hidden_states=True,
-                proprio=batch["proprio"].to(device_id).to(torch.bfloat16) if use_proprio else None,
+                proprio=proprio,
                 proprio_projector=proprio_projector if use_proprio else None,
                 noisy_actions=curr_noisy_actions,
                 noisy_action_projector=noisy_action_projector,
@@ -1213,6 +1234,7 @@ def finetune(cfg: FinetuneConfig) -> None:
         collate_fn=collator,
         num_workers=dataloader_num_workers,
         persistent_workers=dataloader_num_workers > 0,
+        pin_memory=cfg.dataloader_pin_memory,
     )
     if dataloader_num_workers > 0:
         dataloader_kwargs["prefetch_factor"] = cfg.dataloader_prefetch_factor
@@ -1225,6 +1247,7 @@ def finetune(cfg: FinetuneConfig) -> None:
             collate_fn=collator,
             num_workers=dataloader_num_workers,
             persistent_workers=dataloader_num_workers > 0,
+            pin_memory=cfg.dataloader_pin_memory,
         )
         if dataloader_num_workers > 0:
             val_dataloader_kwargs["prefetch_factor"] = cfg.dataloader_prefetch_factor

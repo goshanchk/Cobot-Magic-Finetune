@@ -80,6 +80,9 @@ if __name__ == "__main__":
     config.model.tune_projector = ft_config.tune_projector
     config.model.tune_diffusion_model = ft_config.tune_diffusion_model
     config.model.state_dropout_prob = ft_config.state_dropout_prob
+    config.model.action_loss_gripper_weight = ft_config.action_loss_gripper_weight
+    config.model.action_loss_late_chunk_start = ft_config.action_loss_late_chunk_start
+    config.model.action_loss_late_chunk_weight = ft_config.action_loss_late_chunk_weight
     config.model.random_rotation_angle = ft_config.random_rotation_angle
     config.model.color_jitter_params = ft_config.color_jitter_params
     if ft_config.extra_augmentation_config:

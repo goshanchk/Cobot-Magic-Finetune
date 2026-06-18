@@ -106,8 +106,6 @@ tmux new -d -s groot_cobot_projector \
 
 ## Training with Diffusion Unfrozen
 
-This is the stronger default GR00T fine-tune.
-
 ```bash
 cd /path/to/Isaac-GR00T
 export DATASET_DIR=/path/to/cobot_magic_sber
@@ -126,10 +124,10 @@ tmux new -d -s groot_cobot_full \
    --output_dir $PWD/logs/outputs/cobot_magic_full \
    --save_steps 1000 \
    --save_total_limit 5 \
-   --max_steps 20000 \
+   --max_steps 30000 \
    --warmup_ratio 0.05 \
    --weight_decay 1e-5 \
-   --learning_rate 1e-4 \
+   --learning_rate 5e-5 \
    --use_tensorboard \
    --global_batch_size 64 \
    --color_jitter_params brightness 0.3 contrast 0.4 saturation 0.5 hue 0.08 \
@@ -142,6 +140,9 @@ tmux new -d -s groot_cobot_full \
    --validation-split-path meta/validation_episodes.json \
    --validation-episodes-target 300 \
    --split-seed 42 \
+   --action-loss-gripper-weight 4.0 \
+   --action-loss-late-chunk-start 10 \
+   --action-loss-late-chunk-weight 2.0 \
    2>&1 | tee logs/stdout/cobot_magic_full.log"
 ```
 
@@ -157,13 +158,13 @@ export DATASET_DIR=/path/to/cobot_magic_sber
 
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 .venv/bin/python examples/CobotMagic/eval_cobot_magic.py \
-  --checkpoint_path logs/outputs/cobot_magic_full/checkpoint-20000 \
+  --checkpoint_path logs/outputs/cobot_magic_full/checkpoint-30000 \
   --dataset_path ${DATASET_DIR} \
   --embodiment_tag NEW_EMBODIMENT \
   --modality_config_path examples/CobotMagic/cobot_magic_config.py \
   --validation_episodes_target 300 \
   --seed 42 \
-  --output_dir logs/eval/cobot_magic_full_checkpoint_20000 \
+  --output_dir logs/eval/cobot_magic_full_checkpoint_30000 \
   --device cuda:0 \
   --dtype bf16 \
   --batch_size 1 \
@@ -175,13 +176,13 @@ Full validation over all 300 validation episodes and all valid timesteps can be 
 
 ```bash
 .venv/bin/python examples/CobotMagic/eval_cobot_magic.py \
-  --checkpoint_path logs/outputs/cobot_magic_full/checkpoint-20000 \
+  --checkpoint_path logs/outputs/cobot_magic_full/checkpoint-30000 \
   --dataset_path ${DATASET_DIR} \
   --embodiment_tag NEW_EMBODIMENT \
   --modality_config_path examples/CobotMagic/cobot_magic_config.py \
   --validation_episodes_target 300 \
   --seed 42 \
-  --output_dir logs/eval/cobot_magic_full_checkpoint_20000_full \
+  --output_dir logs/eval/cobot_magic_full_checkpoint_30000_full \
   --device cuda:0 \
   --dtype bf16 \
   --batch_size 1 \

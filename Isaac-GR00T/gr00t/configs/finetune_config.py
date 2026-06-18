@@ -62,6 +62,15 @@ class FinetuneConfig:
     Dropout probability applied to state inputs for regularization during training.
     """
 
+    action_loss_gripper_weight: float = 1.0
+    """Multiplier for gripper action dims in the diffusion/flow-matching action loss. Cobot Magic grippers are dims 6 and 13."""
+
+    action_loss_late_chunk_start: int | None = None
+    """If set, apply action_loss_late_chunk_weight from this action-chunk timestep onward."""
+
+    action_loss_late_chunk_weight: float = 1.0
+    """Multiplier for later action-chunk timesteps, useful for place/release timing."""
+
     # --- Data Augmentation ---
     random_rotation_angle: int | None = None
     """Maximum rotation angle (in degrees) for random rotation augmentation of input images."""

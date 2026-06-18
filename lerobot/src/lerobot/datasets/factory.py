@@ -60,6 +60,8 @@ class _JointOnlyMeta:
         for stat_name, value in list(self._stats[key].items()):
             if torch.is_tensor(value) and value.ndim >= 1 and value.shape[-1] > self._joint_dim:
                 self._stats[key][stat_name] = value[..., : self._joint_dim]
+            elif hasattr(value, "shape") and len(value.shape) >= 1 and value.shape[-1] > self._joint_dim:
+                self._stats[key][stat_name] = value[..., : self._joint_dim]
             elif isinstance(value, list) and len(value) > self._joint_dim:
                 self._stats[key][stat_name] = value[: self._joint_dim]
 

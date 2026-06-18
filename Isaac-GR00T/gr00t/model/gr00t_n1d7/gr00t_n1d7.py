@@ -260,13 +260,31 @@ class Gr00tN1d7ActionHead(nn.Module):
 
         # Slice out only the action portion of pred and target.
         action_mask = action_input.action_mask
-        action_loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
-        loss = action_loss.sum() / (action_mask.sum() + 1e-6)
+        raw_action_loss = F.mse_loss(pred_actions, velocity, reduction="none")
+
+        loss_weights = torch.ones_like(raw_action_loss)
+        gripper_weight = float(getattr(self.config, "action_loss_gripper_weight", 1.0))
+        if gripper_weight != 1.0:
+            gripper_indices = getattr(self.config, "action_loss_gripper_indices", (6, 13))
+            valid_gripper_indices = [idx for idx in gripper_indices if 0 <= idx < loss_weights.shape[-1]]
+            if valid_gripper_indices:
+                loss_weights[:, :, valid_gripper_indices] *= gripper_weight
+
+        late_chunk_start = getattr(self.config, "action_loss_late_chunk_start", None)
+        late_chunk_weight = float(getattr(self.config, "action_loss_late_chunk_weight", 1.0))
+        if late_chunk_start is not None and late_chunk_weight != 1.0:
+            late_chunk_start = max(0, min(int(late_chunk_start), loss_weights.shape[1]))
+            loss_weights[:, late_chunk_start:, :] *= late_chunk_weight
+
+        weighted_action_mask = action_mask * loss_weights
+        action_loss = raw_action_loss * weighted_action_mask
+        loss = action_loss.sum() / (weighted_action_mask.sum() + 1e-6)
 
         return {
             "loss": loss,
             "action_loss": action_loss,
             "action_mask": action_mask,
+            "action_loss_weights": loss_weights,
             "backbone_features": vl_embeds,
             "state_features": state_features,
         }

@@ -108,6 +108,12 @@ class Gr00tN1d7Config(PretrainedConfig):
     noise_s: float = 0.999
     num_timestep_buckets: int = 1000
 
+    # Action loss weighting. Defaults reproduce the upstream uniform MSE loss.
+    action_loss_gripper_indices: tuple[int, ...] = (6, 13)
+    action_loss_gripper_weight: float = 1.0
+    action_loss_late_chunk_start: int | None = None
+    action_loss_late_chunk_weight: float = 1.0
+
     # Training parameters
     tune_projector: bool = True
     tune_diffusion_model: bool = True

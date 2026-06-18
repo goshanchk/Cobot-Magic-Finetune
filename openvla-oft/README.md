@@ -29,6 +29,9 @@ Important launch args:
 --action_head_num_blocks N
 --logger tensorboard|wandb|none
 --dataloader_num_workers N
+--dataloader_prefetch_factor N
+--dataloader_pin_memory True|False
+--merge_lora_during_training True|False
 --lerobot_use_precomputed_stats True|False
 --lerobot_sample_by_episode True|False
 --lerobot_episode_cache_size N
@@ -211,10 +214,10 @@ tail -f ${REPO_ROOT}/logs/stdout/openvla_unfrozen_smoke.log
 
 ## Full Training
 
-For n-GPU node, expose n GPUs and use `--nproc-per-node n`, n is the number of GPUs.
+For an 8-GPU node, expose 8 GPUs and use `--nproc-per-node 8`:
 
 ```bash
-tmux new -d -s openvla_full_train \
+tmux new -d -s openvla_full_lora16_40k \
   "cd ${REPO_ROOT} && \
    CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
@@ -236,29 +239,32 @@ tmux new -d -s openvla_full_train \
    --use_film True \
    --num_images_in_input 3 \
    --use_proprio True \
-   --batch_size 1 \
-   --grad_accumulation_steps 8 \
-   --learning_rate 5e-4 \
-   --num_steps_before_decay 10000 \
-   --max_steps 20000 \
+   --batch_size 2 \
+   --grad_accumulation_steps 2 \
+   --learning_rate 2e-4 \
+   --lr_warmup_steps 1000 \
+   --num_steps_before_decay 30000 \
+   --max_steps 40000 \
    --use_val_set True \
-   --val_freq 1000 \
-   --val_time_limit 180 \
-   --save_freq 2000 \
+   --val_freq 2000 \
+   --val_time_limit 120 \
+   --save_freq 5000 \
+   --merge_lora_during_training False \
    --image_aug True \
-   --lora_rank 8 \
+   --lora_rank 16 \
    --action_head_hidden_dim 2048 \
    --action_head_num_blocks 1 \
    --logger tensorboard \
    --log_freq 10 \
    --shuffle_buffer_size 100000 \
-   --dataloader_num_workers 2 \
-   --dataloader_prefetch_factor 2 \
-   --lerobot_episode_cache_size 4 \
+   --dataloader_num_workers 4 \
+   --dataloader_prefetch_factor 4 \
+   --dataloader_pin_memory True \
+   --lerobot_episode_cache_size 6 \
    --lerobot_use_precomputed_stats True \
    --lerobot_sample_by_episode True \
-   --run_id_note full--3cam--film--chunk24--joints14--lora8--h2048--fastloader \
-   2>&1 | tee logs/stdout/openvla_full_train.log"
+   --run_id_note full--8gpu--3cam--film--chunk24--joints14--lora16--lr2e-4--40k--h2048 \
+   2>&1 | tee logs/stdout/openvla_full_lora16_40k.log"
 ```
 
 ## Logs
@@ -266,7 +272,7 @@ tmux new -d -s openvla_full_train \
 Stdout logs:
 
 ```bash
-tail -f ${REPO_ROOT}/logs/stdout/openvla_full_train.log
+tail -f ${REPO_ROOT}/logs/stdout/openvla_full_lora16_40k.log
 ```
 
 TensorBoard:
@@ -330,5 +336,5 @@ micromamba run -n finetune_env python vla-scripts/cobot_openvlaoft_zmq.py \
   --port 5055
 ```
 
-Use `--use_film False` only for checkpoints trained without FiLM. Use `--use_relative_actions True` only if the checkpoint returns delta actions; the Cobot Magic joint-only checkpoints are trained to return absolute joint targets.
+Use `--use_film False` only for checkpoints trained without FiLM. Use `--use_relative_actions True` only if the checkpoint returns delta actions
 

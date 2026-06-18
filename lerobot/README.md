@@ -16,7 +16,7 @@ logs_smolvla/outputs/                                  # checkpoints and trainin
 
 ## Dataset
 
-Expected dataset root:
+Original dataset root:
 
 ```text
 /path/to/cobot_magic_sber
@@ -29,7 +29,7 @@ first 14 dims: left arm 7 joints + right arm 7 joints
 last 12 dims:  left/right FK EEF xyz/rpy auxiliary coordinates
 ```
 
-SmolVLA training must use only the 14D joint space, use:
+SmolVLA training uses only the 14D joint space:
 
 ```bash
 --dataset.joint_only_dim=14
@@ -47,16 +47,19 @@ images_camera_2 / observation.images.camera_2 -> front/high camera
 
 ## Environment
 
-LeRobot requires Python 3.12. The recommended setup uses `uv` from this folder:
+LeRobot requires Python 3.12. Install both SmolVLA and dataset extras: training needs `datasets`, `jsonlines`, `pandas`, and `torchcodec` in addition to the policy code.
 
 ```bash
 cd /path/to/lerobot
 
-UV_HTTP_TIMEOUT=600 uv sync
-UV_HTTP_TIMEOUT=600 uv pip install -e ".[smolvla]"
+# If the local SOCKS proxy is broken and the server has direct internet, disable it for this shell.
+unset HTTPS_PROXY HTTP_PROXY ALL_PROXY https_proxy http_proxy all_proxy
+
+UV_HTTP_TIMEOUT=1200 uv sync
+UV_HTTP_TIMEOUT=1200 uv pip install -e ".[dataset,smolvla]"
 ```
 
-If downloads are slow, run installation in tmux:
+Tmux installation:
 
 ```bash
 cd /path/to/lerobot
@@ -64,8 +67,9 @@ mkdir -p logs_smolvla/stdout
 
 tmux new -d -s smolvla_install \
   "cd $PWD && \
-   UV_HTTP_TIMEOUT=600 uv sync 2>&1 | tee logs_smolvla/stdout/install.log && \
-   UV_HTTP_TIMEOUT=600 uv pip install -e '.[smolvla]' 2>&1 | tee -a logs_smolvla/stdout/install.log"
+   unset HTTPS_PROXY HTTP_PROXY ALL_PROXY https_proxy http_proxy all_proxy && \
+   UV_HTTP_TIMEOUT=1200 uv sync 2>&1 | tee logs_smolvla/stdout/install.log && \
+   UV_HTTP_TIMEOUT=1200 uv pip install -e '.[dataset,smolvla]' 2>&1 | tee -a logs_smolvla/stdout/install.log"
 ```
 
 Watch:
@@ -74,23 +78,58 @@ Watch:
 tail -f logs_smolvla/stdout/install.log
 ```
 
+## Dataset Conversion
+
+Current LeRobot expects dataset format `v3.0`. The original Cobot Magic dataset is `v2.1`, so keep it untouched for OpenVLA/GR00T and create a separate converted copy for SmolVLA.
+
+```bash
+cp -a /path/to/cobot_magic_sber /path/to/cobot_magic_sber_v3_0
+
+cd /path/to/lerobot
+unset HTTPS_PROXY HTTP_PROXY ALL_PROXY https_proxy http_proxy all_proxy
+
+.venv/bin/python -m lerobot.scripts.convert_dataset_v21_to_v30 \
+  --repo-id=cobot_magic_sber \
+  --root=/path/to/cobot_magic_sber_v3_0 \
+  --push-to-hub=false
+
+cat /path/to/cobot_magic_sber_v3_0/meta/info.json | grep codebase_version
+```
+
+Training commands below should use:
+
+```bash
+export DATASET_DIR=/path/to/cobot_magic_sber_v3_0
+```
+
+SmolVLA base expects camera feature names `observation.images.camera1/2/3`, while the Cobot dataset uses `observation.images.camera_0/1/2`. Use `--rename_map` in training; it only renames feature keys and keeps the same camera order:
+
+```text
+camera_0 -> camera1  # right wrist
+camera_1 -> camera2  # left wrist
+camera_2 -> camera3  # front/high
+```
+
 ## Smoke Training
 
 Use this before a long run. It checks dataset loading, joint-only slicing, model creation, forward/backward, logging, and checkpoint writing.
 
 ```bash
 cd /path/to/lerobot
-export DATASET_DIR=/path/to/cobot_magic_sber
+export DATASET_DIR=/path/to/cobot_magic_sber_v3_0
 mkdir -p logs_smolvla/stdout logs_smolvla/outputs
 
 tmux new -d -s smolvla_cobot_smoke \
   "cd $PWD && \
+   unset HTTPS_PROXY HTTP_PROXY ALL_PROXY https_proxy http_proxy all_proxy && \
    CUDA_VISIBLE_DEVICES=0 \
-   uv run python -m lerobot.scripts.lerobot_train \
+   .venv/bin/python -m lerobot.scripts.lerobot_train \
    --policy.path=lerobot/smolvla_base \
+   --policy.push_to_hub=false \
    --dataset.repo_id=cobot_magic_sber \
    --dataset.root=${DATASET_DIR} \
    --dataset.joint_only_dim=14 \
+   --rename_map='{\"observation.images.camera_0\":\"observation.images.camera1\",\"observation.images.camera_1\":\"observation.images.camera2\",\"observation.images.camera_2\":\"observation.images.camera3\"}' \
    --batch_size=2 \
    --steps=10 \
    --save_freq=10 \
@@ -112,22 +151,27 @@ tail -f logs_smolvla/stdout/cobot_magic_smolvla_smoke.log
 
 ## Full Training
 
-Recommended first full baseline: pretrained `lerobot/smolvla_base`, no LoRA, frozen vision encoder/default SmolVLA fine-tuning behavior, 50k steps.
+Recommended first baseline: pretrained `lerobot/smolvla_base`, no LoRA, default SmolVLA fine-tuning, 50k steps.
+
+By default the vision/VLM backbone is frozen and the trainable part is mainly the action expert and state projection. 
 
 ```bash
 cd /path/to/lerobot
-export DATASET_DIR=/path/to/cobot_magic_sber
+export DATASET_DIR=/path/to/cobot_magic_sber_v3_0
 mkdir -p logs_smolvla/stdout logs_smolvla/outputs
 
 tmux new -d -s smolvla_cobot_2gpu_50k \
   "cd $PWD && \
+   unset HTTPS_PROXY HTTP_PROXY ALL_PROXY https_proxy http_proxy all_proxy && \
    CUDA_VISIBLE_DEVICES=0,1 \
-   uv run torchrun --standalone --nnodes 1 --nproc-per-node 2 \
+   .venv/bin/torchrun --standalone --nnodes 1 --nproc-per-node 2 \
    -m lerobot.scripts.lerobot_train \
    --policy.path=lerobot/smolvla_base \
+   --policy.push_to_hub=false \
    --dataset.repo_id=cobot_magic_sber \
    --dataset.root=${DATASET_DIR} \
    --dataset.joint_only_dim=14 \
+   --rename_map='{\"observation.images.camera_0\":\"observation.images.camera1\",\"observation.images.camera_1\":\"observation.images.camera2\",\"observation.images.camera_2\":\"observation.images.camera3\"}' \
    --batch_size=16 \
    --steps=50000 \
    --save_freq=5000 \
