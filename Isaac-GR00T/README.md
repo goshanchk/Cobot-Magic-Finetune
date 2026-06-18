@@ -124,7 +124,7 @@ tmux new -d -s groot_cobot_full \
    --output_dir $PWD/logs/outputs/cobot_magic_full \
    --save_steps 1000 \
    --save_total_limit 5 \
-   --max_steps 30000 \
+   --max_steps 35000 \
    --warmup_ratio 0.05 \
    --weight_decay 1e-5 \
    --learning_rate 5e-5 \
