@@ -513,6 +513,8 @@ def make_policy(
     kwargs = {}
     if ds_meta is not None:
         features = dataset_to_policy_features(ds_meta.features)
+        if rename_map:
+            features = {rename_map.get(key, key): ft for key, ft in features.items()}
     else:
         if not cfg.pretrained_path:
             logging.warning(
@@ -525,7 +527,12 @@ def make_policy(
         features = env_to_policy_features(env_cfg)
 
     cfg.output_features = {key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION}
-    if not cfg.input_features:
+    if isinstance(cfg, SmolVLAConfig) and ds_meta is not None:
+        # SmolVLA pretrained configs carry their original input schema
+        # (for example 6D state). For robot fine-tuning, the dataset schema
+        # is the source of truth after joint-only slicing and camera renaming.
+        cfg.input_features = {key: ft for key, ft in features.items() if key not in cfg.output_features}
+    elif not cfg.input_features:
         cfg.input_features = {key: ft for key, ft in features.items() if key not in cfg.output_features}
 
     # Store action feature names for relative_exclude_joints support

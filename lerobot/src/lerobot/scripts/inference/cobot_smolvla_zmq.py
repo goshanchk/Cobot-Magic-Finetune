@@ -64,15 +64,15 @@ def resolve_pretrained_model_dir(checkpoint_path: str | Path) -> Path:
 
 def _camera_tensor_for_feature(feature_key: str, images_by_field: dict[str, torch.Tensor]) -> torch.Tensor:
     lower = feature_key.lower()
-    if "camera_0" in lower or "right" in lower:
+    if "camera_0" in lower or "camera1" in lower or "right" in lower:
         return images_by_field["images_camera_0"]
-    if "camera_1" in lower or "left" in lower:
+    if "camera_1" in lower or "camera2" in lower or "left" in lower:
         return images_by_field["images_camera_1"]
-    if "camera_2" in lower or "front" in lower or "high" in lower or "base" in lower:
+    if "camera_2" in lower or "camera3" in lower or "front" in lower or "high" in lower or "base" in lower:
         return images_by_field["images_camera_2"]
     raise KeyError(
         f"Cannot map policy image feature `{feature_key}` to client cameras. "
-        f"Expected camera_0/camera_1/camera_2 or right/left/front/high/base in the feature name."
+        f"Expected camera_0/camera1, camera_1/camera2, camera_2/camera3, or right/left/front/high/base."
     )
 
 
