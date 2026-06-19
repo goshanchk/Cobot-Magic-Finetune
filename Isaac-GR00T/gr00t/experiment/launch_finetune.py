@@ -95,6 +95,7 @@ if __name__ == "__main__":
     config.model.model_name = "nvidia/Cosmos-Reason2-2B"
     config.model.backbone_trainable_params_fp32 = True
     config.model.use_relative_action = True
+    config.model.action_horizon = len(config.data.modality_configs[embodiment_tag]["action"].delta_indices)
 
     config.training.experiment_name = ft_config.experiment_name
     config.training.start_from_checkpoint = ft_config.base_model_path

@@ -21,13 +21,13 @@ cobot_magic_config = {
         delta_indices=[0],
         modality_keys=["all_arms"],
     ),
-    # action.all_arms stores absolute next-joint-state targets.
+    # action.all_arms stores relative joint deltas during training; inference converts them back to absolute targets.
     "action": ModalityConfig(
-        delta_indices=list(range(16)),
+        delta_indices=list(range(24)),
         modality_keys=["all_arms"],
         action_configs=[
             ActionConfig(
-                rep=ActionRepresentation.ABSOLUTE,
+                rep=ActionRepresentation.RELATIVE,
                 type=ActionType.NON_EEF,
                 format=ActionFormat.DEFAULT,
             ),

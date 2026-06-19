@@ -30,10 +30,10 @@ video.cam_high
 video.cam_left_wrist
 video.cam_right_wrist
 state.all_arms      # 14D joints
-action.all_arms     # 14D absolute next-joint-state target
+action.all_arms     # 24-step chunk of 14D relative joint delta targets during training
 ```
 
-The raw dataset also contains `left_eef` and `right_eef` FK xyz/rpy groups, but they are not used for training because current ALOHA control supports joint commands only.
+The raw dataset also contains `left_eef` and `right_eef` FK xyz/rpy groups, but they are not used for training because current ALOHA control supports joint commands only. Training uses 24-step relative joint deltas computed from absolute dataset actions; the ZMQ server converts predicted deltas back to absolute joint targets for the robot client.
 
 Training commands below build the same train/validation split as OpenVLA: they start from `meta/validation_episodes.json` and, if needed, sample extra hold-out episodes up to `300` with `split_seed=42`. Training excludes those hold-out episodes; offline validation evaluates the saved checkpoint on the same split.
 
@@ -90,6 +90,7 @@ tmux new -d -s groot_cobot_projector \
    --learning_rate 1e-4 \
    --use_tensorboard \
    --global_batch_size 2 \
+   --random_rotation_angle 5 \
    --color_jitter_params brightness 0.3 contrast 0.4 saturation 0.5 hue 0.08 \
    --dataloader_num_workers 1 \
    --shard_size 1024 \
@@ -129,7 +130,8 @@ tmux new -d -s groot_cobot_full \
    --weight_decay 1e-5 \
    --learning_rate 5e-5 \
    --use_tensorboard \
-   --global_batch_size 64 \
+   --global_batch_size 32 \
+   --random_rotation_angle 5 \
    --color_jitter_params brightness 0.3 contrast 0.4 saturation 0.5 hue 0.08 \
    --dataloader_num_workers 4 \
    --shard_size 1024 \
@@ -229,7 +231,7 @@ The robot client uses a ZeroMQ `REQ` socket and expects a server-side `REP` sock
 Checkpoint layout expected by `Gr00tPolicy`:
 
 ```text
-/path/to/gr00t_checkpoint-35000/
+/path/to/gr00t_checkpoint-30000/
   config.json
   embodiment_id.json
   processor_config.json
@@ -242,7 +244,7 @@ Run from the Isaac-GR00T repo root:
 
 ```bash
 cd /path/to/Isaac-GR00T
-export GROOT_CHECKPOINT=/path/to/gr00t_checkpoint-35000
+export GROOT_CHECKPOINT=/path/to/gr00t_checkpoint-30000
 
 CUDA_VISIBLE_DEVICES=0 \
 .venv/bin/python examples/CobotMagic/cobot_groot_zmq.py \
@@ -254,4 +256,4 @@ CUDA_VISIBLE_DEVICES=0 \
   --port 5055
 ```
 
-Use `--relative_actions` only if a checkpoint returns delta actions; the Cobot Magic joint-only checkpoints are trained to return absolute joint targets.
+Default Cobot Magic GR00T checkpoints are trained to predict relative joint deltas, and this server converts them to absolute joint targets before replying. Use `--absolute_actions` only for old checkpoints that already output absolute targets.

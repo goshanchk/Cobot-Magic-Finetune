@@ -4,6 +4,7 @@ Protocol:
 - REP socket bound to tcp://0.0.0.0:<port>
 - receives a JSON string with base64 JPEG images, instruction, and proprio
 - returns {"actions": [[...14 floats...], ...]} with absolute joint targets
+  New Cobot Magic GR00T checkpoints predict relative deltas internally; this server converts them to absolute.
 """
 
 from __future__ import annotations
@@ -144,9 +145,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5055)
-    parser.add_argument("--relative_actions", action="store_true", help="Convert model deltas to absolute joint targets before replying.")
+    parser.add_argument("--absolute_actions", action="store_true", help="Use only for old checkpoints that already output absolute joint targets.")
     parser.add_argument("--no_strict", action="store_true", help="Disable GR00T policy strict input/output validation.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.relative_actions = not args.absolute_actions
+    return args
 
 
 def main() -> None:
