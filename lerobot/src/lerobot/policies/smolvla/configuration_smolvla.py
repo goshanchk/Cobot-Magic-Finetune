@@ -26,8 +26,8 @@ from ..rtc.configuration_rtc import RTCConfig
 class SmolVLAConfig(PreTrainedConfig):
     # Input / output structure.
     n_obs_steps: int = 1
-    chunk_size: int = 50
-    n_action_steps: int = 50
+    chunk_size: int = 24
+    n_action_steps: int = 24
 
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {
@@ -61,6 +61,10 @@ class SmolVLAConfig(PreTrainedConfig):
 
     # Decoding
     num_steps: int = 10
+
+    # Optional action loss weighting. Defaults keep the upstream uniform MSE loss.
+    action_loss_left_arm_indices: tuple[int, ...] = (0, 1, 2, 3, 4, 5, 6)
+    action_loss_left_arm_weight: float = 1.0
 
     # Attention utils
     use_cache: bool = True

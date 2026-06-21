@@ -129,6 +129,12 @@ tmux new -d -s smolvla_cobot_smoke \
    --dataset.repo_id=cobot_magic_sber \
    --dataset.root=${DATASET_DIR} \
    --dataset.joint_only_dim=14 \
+   --dataset.relative_joint_actions=true \
+   --dataset.image_transforms.enable=true \
+   --dataset.image_transforms.max_num_transforms=3 \
+   --dataset.image_transforms.random_order=true \
+   --policy.chunk_size=24 \
+   --policy.n_action_steps=24 \
    --rename_map='{\"observation.images.camera_0\":\"observation.images.camera1\",\"observation.images.camera_1\":\"observation.images.camera2\",\"observation.images.camera_2\":\"observation.images.camera3\"}' \
    --batch_size=2 \
    --steps=10 \
@@ -151,7 +157,7 @@ tail -f logs_smolvla/stdout/cobot_magic_smolvla_smoke.log
 
 ## Full Training
 
-Recommended Cobot Magic run: pretrained `lerobot/smolvla_base`, 14D joint-only state/action, full unfrozen fine-tuning, 50k steps.
+Recommended Cobot Magic run: pretrained `lerobot/smolvla_base`, 14D joint-only state/action, relative joint-delta targets, 24-step action chunks, full unfrozen fine-tuning, 50k steps.
 
 ```bash
 cd /path/to/lerobot
@@ -169,6 +175,12 @@ tmux new -d -s smolvla_cobot_full_state14_50k \
    --dataset.repo_id=cobot_magic_sber \
    --dataset.root=${DATASET_DIR} \
    --dataset.joint_only_dim=14 \
+   --dataset.relative_joint_actions=true \
+   --dataset.image_transforms.enable=true \
+   --dataset.image_transforms.max_num_transforms=3 \
+   --dataset.image_transforms.random_order=true \
+   --policy.chunk_size=24 \
+   --policy.n_action_steps=24 \
    --rename_map='{"observation.images.camera_0":"observation.images.camera1","observation.images.camera_1":"observation.images.camera2","observation.images.camera_2":"observation.images.camera3"}' \
    --batch_size=8 \
    --steps=50000 \
@@ -195,9 +207,68 @@ Watch:
 tail -f logs_smolvla/stdout/cobot_magic_smolvla_2gpu_full_unfrozen_state14_50k.log
 ```
 
+## Optional Left-Arm Weighted Training
+
+The default run above uses uniform action loss. For a careful comparison run, use a small extra weight on the left arm dimensions only:
+
+```text
+left arm dims: 0..6
+right arm dims: 7..13
+left arm weight: 1.25
+```
+
+```bash
+cd /path/to/lerobot
+export DATASET_DIR=/path/to/cobot_magic_sber_v3_0
+mkdir -p logs_smolvla/stdout logs_smolvla/outputs
+
+tmux new -d -s smolvla_cobot_full_state14_left125_50k \
+  "cd $PWD && \
+   unset HTTPS_PROXY HTTP_PROXY ALL_PROXY https_proxy http_proxy all_proxy && \
+   CUDA_VISIBLE_DEVICES=0,1 \
+   .venv/bin/torchrun --standalone --nnodes 1 --nproc-per-node 2 \
+   -m lerobot.scripts.lerobot_train \
+   --policy.path=lerobot/smolvla_base \
+   --policy.push_to_hub=false \
+   --dataset.repo_id=cobot_magic_sber \
+   --dataset.root=${DATASET_DIR} \
+   --dataset.joint_only_dim=14 \
+   --dataset.relative_joint_actions=true \
+   --dataset.image_transforms.enable=true \
+   --dataset.image_transforms.max_num_transforms=3 \
+   --dataset.image_transforms.random_order=true \
+   --policy.chunk_size=24 \
+   --policy.n_action_steps=24 \
+   --policy.action_loss_left_arm_weight=1.25 \
+   --rename_map='{"observation.images.camera_0":"observation.images.camera1","observation.images.camera_1":"observation.images.camera2","observation.images.camera_2":"observation.images.camera3"}' \
+   --batch_size=8 \
+   --steps=50000 \
+   --save_freq=5000 \
+   --log_freq=100 \
+   --num_workers=4 \
+   --prefetch_factor=2 \
+   --output_dir=logs_smolvla/outputs/cobot_magic_smolvla_2gpu_full_unfrozen_state14_left125_50k \
+   --job_name=cobot_magic_smolvla_2gpu_full_unfrozen_state14_left125_50k \
+   --policy.device=cuda \
+   --policy.freeze_vision_encoder=false \
+   --policy.train_expert_only=false \
+   --policy.load_vlm_weights=true \
+   --policy.optimizer_lr=5e-5 \
+   --policy.scheduler_warmup_steps=1000 \
+   --policy.scheduler_decay_steps=50000 \
+   --wandb.enable=false \
+   2>&1 | tee logs_smolvla/stdout/cobot_magic_smolvla_2gpu_full_unfrozen_state14_left125_50k.log"
+```
+
+Watch:
+
+```bash
+tail -f logs_smolvla/stdout/cobot_magic_smolvla_2gpu_full_unfrozen_state14_left125_50k.log
+```
+
 ## Inference: ZeroMQ Server
 
-The robot client uses a ZeroMQ `REQ` socket and expects a server-side `REP` socket. The SmolVLA adapter listens on `0.0.0.0:5055`, receives 3 JPEG-base64 cameras plus a 14D joint proprio vector, and returns absolute joint actions with shape `[num_actions, 14]`.
+The robot client uses a ZeroMQ `REQ` socket and expects a server-side `REP` socket. The SmolVLA adapter listens on `0.0.0.0:5055`, receives 3 JPEG-base64 cameras plus a 14D joint proprio vector, predicts relative joint deltas, and returns absolute joint actions with shape `[num_actions, 14]`.
 
 Checkpoint layout expected by LeRobot:
 
@@ -233,7 +304,7 @@ You may pass either the checkpoint directory or its `pretrained_model` subdirect
 /path/to/checkpoints/050000/pretrained_model
 ```
 
-Use `--relative_actions` only if a checkpoint returns delta actions. The Cobot Magic joint-only training setup is intended to learn absolute joint targets.
+Default Cobot Magic SmolVLA checkpoints are trained to predict relative joint deltas, and this server converts them to absolute joint targets before replying. Use `--absolute_actions` only for old checkpoints that already output absolute targets.
 
 ## Tmux
 

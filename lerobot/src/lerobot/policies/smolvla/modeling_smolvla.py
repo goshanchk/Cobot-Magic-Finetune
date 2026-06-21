@@ -393,22 +393,30 @@ class SmolVLAPolicy(PreTrainedPolicy):
         losses = losses[:, :, : self.config.max_action_dim]
         loss_dict["losses_after_rm_padding"] = losses.clone().mean().item()
 
+        loss_weights = torch.ones_like(losses)
+        left_arm_weight = float(getattr(self.config, "action_loss_left_arm_weight", 1.0))
+        if left_arm_weight != 1.0:
+            left_arm_indices = getattr(self.config, "action_loss_left_arm_indices", (0, 1, 2, 3, 4, 5, 6))
+            valid_left_arm_indices = [idx for idx in left_arm_indices if 0 <= idx < loss_weights.shape[-1]]
+            if valid_left_arm_indices:
+                loss_weights[:, :, valid_left_arm_indices] *= left_arm_weight
+        loss_dict["action_loss_left_arm_weight"] = left_arm_weight
+
+        if actions_is_pad is not None:
+            valid_mask = (~actions_is_pad).unsqueeze(-1).to(loss_weights.dtype)
+            loss_weights = loss_weights * valid_mask
+
+        weighted_losses = losses * loss_weights
+
         if reduction == "none":
-            # Return per-sample losses (B,) by averaging over valid (time, action) entries
-            if actions_is_pad is None:
-                per_sample_loss = losses.mean(dim=(1, 2))
-            else:
-                num_valid = ((~actions_is_pad).sum(dim=1) * losses.shape[-1]).clamp_min(1)
-                per_sample_loss = losses.sum(dim=(1, 2)) / num_valid
+            # Return per-sample losses (B,) by averaging over valid weighted (time, action) entries.
+            per_sample_denominator = loss_weights.sum(dim=(1, 2)).clamp_min(1e-6)
+            per_sample_loss = weighted_losses.sum(dim=(1, 2)) / per_sample_denominator
             loss_dict["loss"] = per_sample_loss.mean().item()
             return per_sample_loss, loss_dict
         else:
-            # Default: return scalar mean loss over valid (time, action) entries
-            if actions_is_pad is None:
-                loss = losses.mean()
-            else:
-                num_valid = ((~actions_is_pad).sum() * losses.shape[-1]).clamp_min(1)
-                loss = losses.sum() / num_valid
+            # Default: return scalar mean loss over valid weighted (time, action) entries.
+            loss = weighted_losses.sum() / loss_weights.sum().clamp_min(1e-6)
             loss_dict["loss"] = loss.item()
             return loss, loss_dict
 

@@ -42,6 +42,7 @@ class DatasetConfig:
     # If set, keep only the first N dimensions of observation.state and action at training time.
     # This is useful for datasets that store joints followed by auxiliary FK/EEF coordinates.
     joint_only_dim: int | None = None
+    relative_joint_actions: bool = False
 
     def __post_init__(self) -> None:
         if self.episodes is not None:

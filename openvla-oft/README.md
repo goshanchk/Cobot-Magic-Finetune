@@ -52,11 +52,11 @@ observation.images.camera_2 -> primary image
 observation.images.camera_1 -> left wrist image
 observation.images.camera_0 -> right wrist image
 observation.state           -> raw state, shape [26]; loader keeps first 14 joint dims
-action                      -> raw action, shape [26]; loader keeps first 14 joint dims
+action                      -> raw absolute action, shape [26]; loader keeps first 14 joint dims and trains on action - current_state
 task_index                  -> language_instruction via meta/tasks.jsonl
 ```
 
-Only the joint-space part is trained: `left_q0..left_q6 + right_q0..right_q6`.
+Only the joint-space part is trained: `left_q0..left_q6 + right_q0..right_q6`. The model learns relative joint deltas; inference converts them back to absolute joint targets for the robot client.
 The raw FK EEF xyz/rpy coordinates stay in the source dataset but are dropped by the loader, because current ALOHA control supports joint commands only.
 
 Cobot constants:
@@ -87,7 +87,7 @@ split_seed: 42
 Performance notes for the direct LeRobot backend:
 
 ```text
-lerobot_use_precomputed_stats=True  uses meta/stats.json sliced to 14D joints; avoids scanning all parquet at startup
+lerobot_use_precomputed_stats=True  uses meta/stats.json for proprio; action stats are recomputed after relative action conversion
 lerobot_sample_by_episode=True      shuffles episodes first, then timesteps; reuses decoded video cache
 dataloader_num_workers>0            lets CPU workers prepare video batches while GPU is training
 ```
@@ -149,7 +149,7 @@ tmux new -d -s openvla_frozen_smoke \
    --max_steps 1 \
    --use_val_set False \
    --save_freq 1000 \
-   --image_aug False \
+   --image_aug True \
    --lora_rank 8 \
    --action_head_hidden_dim 512 \
    --action_head_num_blocks 1 \
@@ -195,7 +195,7 @@ tmux new -d -s openvla_unfrozen_smoke \
    --max_steps 1 \
    --use_val_set False \
    --save_freq 1000 \
-   --image_aug False \
+   --image_aug True \
    --lora_rank 8 \
    --action_head_hidden_dim 512 \
    --action_head_num_blocks 1 \
@@ -217,7 +217,7 @@ tail -f ${REPO_ROOT}/logs/stdout/openvla_unfrozen_smoke.log
 For an 8-GPU node, expose 8 GPUs and use `--nproc-per-node 8`:
 
 ```bash
-tmux new -d -s openvla_full_lora16_40k \
+tmux new -d -s openvla_full_lora16_50k \
   "cd ${REPO_ROOT} && \
    CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
@@ -239,12 +239,12 @@ tmux new -d -s openvla_full_lora16_40k \
    --use_film True \
    --num_images_in_input 3 \
    --use_proprio True \
-   --batch_size 2 \
-   --grad_accumulation_steps 2 \
+   --batch_size 8 \
+   --grad_accumulation_steps 1 \
    --learning_rate 2e-4 \
    --lr_warmup_steps 1000 \
-   --num_steps_before_decay 30000 \
-   --max_steps 40000 \
+   --num_steps_before_decay 40000 \
+   --max_steps 50000 \
    --use_val_set True \
    --val_freq 2000 \
    --val_time_limit 120 \
@@ -263,8 +263,8 @@ tmux new -d -s openvla_full_lora16_40k \
    --lerobot_episode_cache_size 6 \
    --lerobot_use_precomputed_stats True \
    --lerobot_sample_by_episode True \
-   --run_id_note full--8gpu--3cam--film--chunk24--joints14--lora16--lr2e-4--40k--h2048 \
-   2>&1 | tee logs/stdout/openvla_full_lora16_40k.log"
+   --run_id_note full--8gpu--bs64-noaccum--3cam--film--chunk24--joints14--lora16--lr2e-4--50k--h2048 \
+   2>&1 | tee logs/stdout/openvla_full_lora16_50k.log"
 ```
 
 ## Logs
@@ -272,7 +272,7 @@ tmux new -d -s openvla_full_lora16_40k \
 Stdout logs:
 
 ```bash
-tail -f ${REPO_ROOT}/logs/stdout/openvla_full_lora16_40k.log
+tail -f ${REPO_ROOT}/logs/stdout/openvla_full_lora16_50k.log
 ```
 
 TensorBoard:
@@ -331,10 +331,10 @@ micromamba run -n finetune_env python vla-scripts/cobot_openvlaoft_zmq.py \
   --use_film True \
   --num_images_in_input 3 \
   --use_proprio True \
-  --lora_rank 8 \
+  --lora_rank 16 \
   --host 0.0.0.0 \
   --port 5055
 ```
 
-Use `--use_film False` only for checkpoints trained without FiLM. Use `--use_relative_actions True` only if the checkpoint returns delta actions
+Use `--use_film False` only for checkpoints trained without FiLM. New Cobot Magic checkpoints predict relative joint deltas, and `cobot_openvlaoft_zmq.py` converts them to absolute targets by default. Use `--use_relative_actions False` only for old absolute-action checkpoints.
 

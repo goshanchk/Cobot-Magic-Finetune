@@ -46,7 +46,7 @@ COBOT_MAGIC_CONSTANTS = {
     # control consumes joints only.
     "ACTION_DIM": 14,
     "PROPRIO_DIM": 14,
-    # Actions are absolute next-state targets, so avoid quantile clipping.
+    # Relative joint deltas use bounds normalization; avoid quantile clipping.
     "ACTION_PROPRIO_NORMALIZATION_TYPE": NormalizationType.BOUNDS,
 }
 

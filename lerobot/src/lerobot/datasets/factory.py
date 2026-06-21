@@ -33,7 +33,7 @@ from .streaming_dataset import StreamingLeRobotDataset
 
 
 class _JointOnlyMeta:
-    def __init__(self, meta, joint_dim: int):
+    def __init__(self, meta, joint_dim: int, relative_action_stats: dict | None = None):
         self._meta = meta
         self._features = copy.deepcopy(meta.features)
         self._stats = copy.deepcopy(meta.stats)
@@ -42,6 +42,8 @@ class _JointOnlyMeta:
         self._slice_feature("observation.state")
         self._slice_stats(ACTION)
         self._slice_stats("observation.state")
+        if relative_action_stats is not None:
+            self._stats[ACTION] = relative_action_stats
 
     def _slice_feature(self, key: str) -> None:
         if key not in self._features:
@@ -78,19 +80,75 @@ class _JointOnlyMeta:
 
 
 class JointOnlyDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset, joint_dim: int):
+    def __init__(self, dataset, joint_dim: int, relative_actions: bool = False):
         self.dataset = dataset
         self.joint_dim = joint_dim
-        self.meta = _JointOnlyMeta(dataset.meta, joint_dim)
+        self.relative_actions = relative_actions
+        relative_action_stats = self._compute_relative_action_stats() if relative_actions else None
+        self.meta = _JointOnlyMeta(dataset.meta, joint_dim, relative_action_stats=relative_action_stats)
 
     def __len__(self):
         return len(self.dataset)
 
+    def _current_state(self, item):
+        state = item["observation.state"][..., : self.joint_dim]
+        if state.ndim == 1:
+            return state
+        return state[-1]
+
+    def _relative_action(self, action, state):
+        return action[..., : self.joint_dim] - state
+
+    def _compute_relative_action_stats(self):
+        count = 0
+        sum_values = None
+        sum_sq_values = None
+        min_values = None
+        max_values = None
+
+        for idx in range(len(self.dataset)):
+            item = self.dataset[idx]
+            if ACTION not in item or "observation.state" not in item:
+                continue
+            action = item[ACTION][..., : self.joint_dim].to(torch.float32)
+            state = self._current_state(item).to(torch.float32)
+            rel = (action - state).reshape(-1, self.joint_dim)
+            if rel.numel() == 0:
+                continue
+            if sum_values is None:
+                sum_values = rel.sum(dim=0)
+                sum_sq_values = (rel * rel).sum(dim=0)
+                min_values = rel.min(dim=0).values
+                max_values = rel.max(dim=0).values
+            else:
+                sum_values += rel.sum(dim=0)
+                sum_sq_values += (rel * rel).sum(dim=0)
+                min_values = torch.minimum(min_values, rel.min(dim=0).values)
+                max_values = torch.maximum(max_values, rel.max(dim=0).values)
+            count += rel.shape[0]
+
+        if count == 0:
+            raise ValueError("Cannot compute relative action stats: dataset has no action/state samples")
+
+        mean = sum_values / count
+        var = torch.clamp(sum_sq_values / count - mean * mean, min=0.0)
+        std = torch.sqrt(var)
+        std = torch.clamp(std, min=1e-6)
+        return {
+            "mean": mean,
+            "std": std,
+            "min": min_values,
+            "max": max_values,
+        }
+
     def __getitem__(self, idx):
         item = self.dataset[idx]
-        for key in (ACTION, "observation.state"):
-            if key in item:
-                item[key] = item[key][..., : self.joint_dim]
+        if "observation.state" in item:
+            item["observation.state"] = item["observation.state"][..., : self.joint_dim]
+        if ACTION in item:
+            item[ACTION] = item[ACTION][..., : self.joint_dim]
+            if self.relative_actions:
+                item[ACTION] = self._relative_action(item[ACTION], self._current_state(item))
         return item
 
     def __getattr__(self, name):
@@ -196,6 +254,10 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                 dataset.meta.stats[key][stats_type] = torch.tensor(stats, dtype=torch.float32)
 
     if cfg.dataset.joint_only_dim is not None:
-        dataset = JointOnlyDataset(dataset, cfg.dataset.joint_only_dim)
+        dataset = JointOnlyDataset(
+            dataset,
+            cfg.dataset.joint_only_dim,
+            relative_actions=cfg.dataset.relative_joint_actions,
+        )
 
     return dataset

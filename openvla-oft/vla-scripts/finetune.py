@@ -268,7 +268,10 @@ def wrap_train_module(
     if backend == "fsdp":
         mixed_precision = MixedPrecision(
             param_dtype=torch.bfloat16,
-            reduce_dtype=torch.bfloat16,
+            # Keep parameter/buffer storage in bf16, but reduce gradients in fp32.
+            # This is more stable with PEFT/LoRA + FSDP on 8-GPU runs and avoids
+            # intermittent CUDA/NCCL `misaligned address` failures during backward.
+            reduce_dtype=torch.float32,
             buffer_dtype=torch.bfloat16,
         )
         auto_wrap_policy = None
@@ -320,7 +323,7 @@ def wrap_train_module(
     if backend != "ddp":
         raise ValueError(f"Unsupported distributed backend: {backend}")
 
-    return DDP(module, device_ids=[device_id], find_unused_parameters=find_unused, gradient_as_bucket_view=True)
+    return DDP(module, device_ids=[device_id], find_unused_parameters=find_unused, gradient_as_bucket_view=False)
 
 
 def wrap_ddp(module: nn.Module, device_id: int, find_unused: bool = False) -> nn.Module:

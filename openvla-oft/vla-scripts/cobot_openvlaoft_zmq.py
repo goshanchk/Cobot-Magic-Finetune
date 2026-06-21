@@ -111,6 +111,8 @@ class CobotOpenVLAOFTZMQServer:
         )
         actions = _as_actions_array(actions)
         if self.cfg.use_relative_actions:
+            # New Cobot Magic checkpoints are trained to predict relative joint deltas.
+            # The robot client expects absolute joint targets, so convert here.
             actions = proprio[-1][None, :] + actions
         return {"actions": actions.astype(float).tolist()}
 
@@ -149,7 +151,7 @@ class OpenVLAOFTZMQConfig:
     center_crop: bool = True
     lora_rank: int = 32
     unnorm_key: Union[str, Path] = ""
-    use_relative_actions: bool = False
+    use_relative_actions: bool = True
     load_in_8bit: bool = False
     load_in_4bit: bool = False
     seed: int = 7

@@ -160,16 +160,23 @@ def _slice_stats(stats: Dict[str, Any], target_dim: int) -> Dict[str, Any]:
     return {key: list(value[:target_dim]) for key, value in stats.items()}
 
 
+def _relative_actions_from_states(actions: np.ndarray, states: np.ndarray) -> np.ndarray:
+    if actions.shape != states.shape:
+        raise ValueError(f"Expected action/state shape match for relative actions, got {actions.shape} and {states.shape}")
+    return (actions - states).astype(np.float32)
+
+
 def _load_precomputed_lerobot_statistics(
     dataset_dir: Path,
     dataset_name: str,
     num_transitions: int,
     num_trajectories: int,
+    relative_action_stats: Dict[str, Any],
 ) -> Dict[str, Any]:
     stats = _load_json(dataset_dir / "meta" / "stats.json")
     return {
         dataset_name: {
-            "action": _slice_stats(stats["action"], ACTION_DIM),
+            "action": relative_action_stats,
             "proprio": _slice_stats(stats["observation.state"], PROPRIO_DIM),
             "num_transitions": num_transitions,
             "num_trajectories": num_trajectories,
@@ -310,6 +317,19 @@ class LeRobotDataset(IterableDataset):
             self.transitions_by_episode[episode_index] = steps
             self.transition_indices.extend((episode_index, t) for t in steps)
 
+        relative_actions_for_stats = []
+        if normalization_statistics is None:
+            for episode_index in self.episode_indices:
+                table = pq.read_table(_episode_parquet_path(self.data_root_dir, self.info, episode_index))
+                actions = np.asarray(table["action"].to_pylist(), dtype=np.float32)
+                states = np.asarray(table["observation.state"].to_pylist(), dtype=np.float32)
+                actions = _select_joint_dims(actions, ACTION_DIM, "action", episode_index)
+                states = _select_joint_dims(states, ACTION_DIM, "observation.state", episode_index)
+                relative_actions_for_stats.append(_relative_actions_from_states(actions, states))
+            relative_action_stats = _stats_dict(np.concatenate(relative_actions_for_stats, axis=0))
+        else:
+            relative_action_stats = None
+
         if normalization_statistics is not None:
             self.dataset_statistics = normalization_statistics
         elif use_precomputed_stats:
@@ -318,18 +338,17 @@ class LeRobotDataset(IterableDataset):
                 dataset_name,
                 len(self.transition_indices),
                 len(self.episode_indices),
+                relative_action_stats,
             )
         else:
-            actions_for_stats, proprios_for_stats = [], []
+            proprios_for_stats = []
             for episode_index in self.episode_indices:
                 table = pq.read_table(_episode_parquet_path(self.data_root_dir, self.info, episode_index))
-                actions = np.asarray(table["action"].to_pylist(), dtype=np.float32)
                 states = np.asarray(table["observation.state"].to_pylist(), dtype=np.float32)
-                actions_for_stats.append(_select_joint_dims(actions, ACTION_DIM, "action", episode_index))
                 proprios_for_stats.append(_select_joint_dims(states, PROPRIO_DIM, "observation.state", episode_index))
             self.dataset_statistics = {
                 dataset_name: {
-                    "action": _stats_dict(np.concatenate(actions_for_stats, axis=0)),
+                    "action": relative_action_stats,
                     "proprio": _stats_dict(np.concatenate(proprios_for_stats, axis=0)),
                     "num_transitions": len(self.transition_indices),
                     "num_trajectories": len(self.episode_indices),
@@ -377,7 +396,7 @@ class LeRobotDataset(IterableDataset):
         actions = episode["action"]
         states = episode["state"]
         end = min(t + NUM_ACTIONS_CHUNK, actions.shape[0])
-        action_chunk = actions[t:end]
+        action_chunk = actions[t:end] - states[t][None, :]
         if action_chunk.shape[0] < NUM_ACTIONS_CHUNK:
             pad = np.repeat(action_chunk[-1:], NUM_ACTIONS_CHUNK - action_chunk.shape[0], axis=0)
             action_chunk = np.concatenate([action_chunk, pad], axis=0)

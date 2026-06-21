@@ -134,7 +134,7 @@ class DeployConfig:
     lora_rank: int = 32                              # Rank of LoRA weight matrix (MAKE SURE THIS MATCHES TRAINING!)
 
     unnorm_key: Union[str, Path] = ""                # Action un-normalization key
-    use_relative_actions: bool = False               # Whether to use relative actions (delta joint angles)
+    use_relative_actions: bool = True                # New Cobot Magic checkpoints predict relative action deltas
 
     load_in_8bit: bool = False                       # (For OpenVLA only) Load with 8-bit quantization
     load_in_4bit: bool = False                       # (For OpenVLA only) Load with 4-bit quantization
