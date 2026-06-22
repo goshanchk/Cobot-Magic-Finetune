@@ -15,8 +15,10 @@
 # limitations under the License.
 import copy
 import logging
+from pathlib import Path
 from pprint import pformat
 
+import pyarrow.parquet as pq
 import torch
 
 from lerobot.configs import PreTrainedConfig
@@ -99,33 +101,69 @@ class JointOnlyDataset(torch.utils.data.Dataset):
     def _relative_action(self, action, state):
         return action[..., : self.joint_dim] - state
 
-    def _compute_relative_action_stats(self):
-        count = 0
-        sum_values = None
-        sum_sq_values = None
-        min_values = None
-        max_values = None
+    def _accumulate_relative_stats(self, rel, state):
+        rel = rel.reshape(-1, self.joint_dim).to(torch.float32)
+        if rel.numel() == 0:
+            return state
 
+        count, sum_values, sum_sq_values, min_values, max_values = state
+        if sum_values is None:
+            sum_values = rel.sum(dim=0)
+            sum_sq_values = (rel * rel).sum(dim=0)
+            min_values = rel.min(dim=0).values
+            max_values = rel.max(dim=0).values
+        else:
+            sum_values += rel.sum(dim=0)
+            sum_sq_values += (rel * rel).sum(dim=0)
+            min_values = torch.minimum(min_values, rel.min(dim=0).values)
+            max_values = torch.maximum(max_values, rel.max(dim=0).values)
+        count += rel.shape[0]
+        return count, sum_values, sum_sq_values, min_values, max_values
+
+    def _relative_stats_from_parquet(self):
+        root = Path(getattr(self.dataset, "root", ""))
+        parquet_files = sorted((root / "data").glob("chunk-*/*.parquet"))
+        if not parquet_files:
+            return None
+
+        selected_episodes = set(self.dataset.episodes) if getattr(self.dataset, "episodes", None) is not None else None
+        state = (0, None, None, None, None)
+
+        for parquet_file in parquet_files:
+            table = pq.read_table(parquet_file, columns=[ACTION, "observation.state", "episode_index"])
+            actions = table[ACTION].to_pylist()
+            states = table["observation.state"].to_pylist()
+            episode_indices = table["episode_index"].to_pylist()
+
+            if selected_episodes is not None:
+                rows = [idx for idx, episode_index in enumerate(episode_indices) if episode_index in selected_episodes]
+                if not rows:
+                    continue
+                actions = [actions[idx] for idx in rows]
+                states = [states[idx] for idx in rows]
+
+            action_tensor = torch.as_tensor(actions, dtype=torch.float32)[..., : self.joint_dim]
+            state_tensor = torch.as_tensor(states, dtype=torch.float32)[..., : self.joint_dim]
+            state = self._accumulate_relative_stats(action_tensor - state_tensor, state)
+
+        return state
+
+    def _relative_stats_from_dataset_items(self):
+        state = (0, None, None, None, None)
         for idx in range(len(self.dataset)):
             item = self.dataset[idx]
             if ACTION not in item or "observation.state" not in item:
                 continue
             action = item[ACTION][..., : self.joint_dim].to(torch.float32)
-            state = self._current_state(item).to(torch.float32)
-            rel = (action - state).reshape(-1, self.joint_dim)
-            if rel.numel() == 0:
-                continue
-            if sum_values is None:
-                sum_values = rel.sum(dim=0)
-                sum_sq_values = (rel * rel).sum(dim=0)
-                min_values = rel.min(dim=0).values
-                max_values = rel.max(dim=0).values
-            else:
-                sum_values += rel.sum(dim=0)
-                sum_sq_values += (rel * rel).sum(dim=0)
-                min_values = torch.minimum(min_values, rel.min(dim=0).values)
-                max_values = torch.maximum(max_values, rel.max(dim=0).values)
-            count += rel.shape[0]
+            current_state = self._current_state(item).to(torch.float32)
+            state = self._accumulate_relative_stats(action - current_state, state)
+        return state
+
+    def _compute_relative_action_stats(self):
+        # Avoid `dataset[idx]` when possible: it can decode images/videos and make
+        # distributed startup exceed the c10d barrier timeout. The parquet path reads
+        # only joint state/action columns and computes stats after relative conversion.
+        count, sum_values, sum_sq_values, min_values, max_values = self._relative_stats_from_parquet() or self._relative_stats_from_dataset_items()
 
         if count == 0:
             raise ValueError("Cannot compute relative action stats: dataset has no action/state samples")
