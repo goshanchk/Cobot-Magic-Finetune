@@ -160,7 +160,7 @@ class FinetuneConfig:
     wandb_project: str = "your-wandb-project"        # Name of WandB project, only used when logger=wandb
     run_id_note: Optional[str] = None                # Extra note to add to end of run ID for logging
     run_id_override: Optional[str] = None            # Optional string to override the run ID with
-    distributed_backend: str = "ddp"                 # Distributed backend: ddp or fsdp
+    distributed_backend: str = "ddp"                 # Distributed backend: ddp, fsdp, or fsdp_shard_grad_op
     wandb_log_freq: int = 10                         # Deprecated: use log_freq
 
     # fmt: on
@@ -265,7 +265,7 @@ def wrap_train_module(
     if not dist.is_available() or not dist.is_initialized() or dist.get_world_size() == 1:
         return SingleProcessModule(module)
 
-    if backend == "fsdp":
+    if backend in {"fsdp", "fsdp_shard_grad_op"}:
         mixed_precision = MixedPrecision(
             param_dtype=torch.bfloat16,
             # Keep parameter/buffer storage in bf16, but reduce gradients in fp32.
@@ -310,12 +310,16 @@ def wrap_train_module(
                 )
         print(f"FSDP auto_wrap_policy enabled: {auto_wrap_policy is not None}")
 
+        sharding_strategy = (
+            ShardingStrategy.SHARD_GRAD_OP if backend == "fsdp_shard_grad_op" else ShardingStrategy.FULL_SHARD
+        )
+
         return FSDP(
             module,
             auto_wrap_policy=auto_wrap_policy,
             device_id=torch.cuda.current_device(),
             mixed_precision=mixed_precision,
-            sharding_strategy=ShardingStrategy.FULL_SHARD,
+            sharding_strategy=sharding_strategy,
             limit_all_gathers=True,
             use_orig_params=True,
         )
@@ -385,7 +389,7 @@ def init_module(
         module = module.to(torch.bfloat16)
     module = module.to(device_id)
 
-    aux_backend = "ddp" if cfg.distributed_backend == "fsdp" else cfg.distributed_backend
+    aux_backend = "ddp" if cfg.distributed_backend in {"fsdp", "fsdp_shard_grad_op"} else cfg.distributed_backend
     return wrap_train_module(module, device_id, find_unused_params, backend=aux_backend)
 
 
@@ -1043,7 +1047,7 @@ def finetune(cfg: FinetuneConfig) -> None:
             param.requires_grad = False
         count_parameters(vla, "vla (frozen)")
 
-    if cfg.distributed_backend == "fsdp":
+    if cfg.distributed_backend in {"fsdp", "fsdp_shard_grad_op"}:
         # FSDP flattens parameters inside each wrapped module, which requires a uniform dtype.
         # Moving to CPU before wrapping avoids needing one huge temporary flat parameter on each GPU.
         vla = vla.to(torch.bfloat16).cpu()

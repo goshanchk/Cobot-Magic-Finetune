@@ -255,5 +255,3 @@ CUDA_VISIBLE_DEVICES=0 \
   --host 0.0.0.0 \
   --port 5055
 ```
-
-Default Cobot Magic GR00T checkpoints are trained to predict relative joint deltas, and this server converts them to absolute joint targets before replying. Use `--absolute_actions` only for old checkpoints that already output absolute targets.

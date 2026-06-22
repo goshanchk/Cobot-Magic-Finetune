@@ -3,8 +3,8 @@
 Protocol:
 - REP socket bound to tcp://0.0.0.0:<port>
 - receives a JSON string with base64 JPEG images, instruction, and proprio
-- returns {"actions": [[...14 floats...], ...]} with absolute joint targets
-  New Cobot Magic GR00T checkpoints predict relative deltas internally; this server converts them to absolute.
+- returns {"actions": [[...14 floats...], ...]} with absolute joint targets.
+  GR00T's processor already decodes normalized actions and converts relative actions to absolute targets.
 """
 
 from __future__ import annotations
@@ -116,9 +116,11 @@ class CobotGR00TZMQServer:
     def infer(self, request: dict[str, Any]) -> dict[str, Any]:
         observation, proprio = self._request_to_observation(request)
         action_chunk, _ = self.policy.get_action(observation)
+        # Gr00tPolicy.processor.decode_action already unnormalizes actions and, for
+        # relative-action checkpoints, converts them to absolute joint targets using
+        # the current state. Do not add proprio here, otherwise absolute targets are
+        # shifted by the current joint positions and the robot can jump/torque out.
         actions = _as_actions_array(action_chunk, key="all_arms")
-        if self.args.relative_actions:
-            actions = proprio[-1][None, :] + actions
         return {"actions": actions.astype(float).tolist()}
 
     def run(self) -> None:
@@ -145,11 +147,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5055)
-    parser.add_argument("--absolute_actions", action="store_true", help="Use only for old checkpoints that already output absolute joint targets.")
+    parser.add_argument(
+        "--absolute_actions",
+        action="store_true",
+        help="Deprecated compatibility flag; GR00T policy already returns absolute joint targets.",
+    )
     parser.add_argument("--no_strict", action="store_true", help="Disable GR00T policy strict input/output validation.")
-    args = parser.parse_args()
-    args.relative_actions = not args.absolute_actions
-    return args
+    return parser.parse_args()
 
 
 def main() -> None:
