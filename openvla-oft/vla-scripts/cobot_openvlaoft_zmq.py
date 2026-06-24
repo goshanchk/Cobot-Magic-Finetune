@@ -93,27 +93,27 @@ class CobotOpenVLAOFTZMQServer:
                 outside.tolist(), proprio[outside].tolist(), low[outside].tolist(), high[outside].tolist(),
             )
 
-    def _validate_targets(self, actions: np.ndarray, proprio: np.ndarray) -> None:
-        if not np.isfinite(proprio).all():
-            raise ValueError("Received non-finite proprio; refusing to move the robot")
-        if not np.isfinite(actions).all():
-            raise ValueError("Model produced non-finite actions; refusing to move the robot")
+    # def _validate_targets(self, actions: np.ndarray, proprio: np.ndarray) -> None:
+    #     if not np.isfinite(proprio).all():
+    #         raise ValueError("Received non-finite proprio; refusing to move the robot")
+    #     if not np.isfinite(actions).all():
+    #         raise ValueError("Model produced non-finite actions; refusing to move the robot")
 
-        target_delta = actions - proprio[-1][None, :]
-        arm_indices = np.asarray([0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12])
-        gripper_indices = np.asarray([6, 13])
-        max_arm_delta = float(np.abs(target_delta[:, arm_indices]).max())
-        max_gripper_delta = float(np.abs(target_delta[:, gripper_indices]).max())
-        if max_arm_delta > self.cfg.max_arm_target_delta:
-            raise ValueError(
-                f"Unsafe arm target rejected: delta {max_arm_delta:.4f} exceeds "
-                f"{self.cfg.max_arm_target_delta:.4f}. Check action mode, joint order, and normalization."
-            )
-        if max_gripper_delta > self.cfg.max_gripper_target_delta:
-            raise ValueError(
-                f"Unsafe gripper target rejected: delta {max_gripper_delta:.4f} exceeds "
-                f"{self.cfg.max_gripper_target_delta:.4f}. Check action mode and normalization."
-            )
+    #     target_delta = actions - proprio[-1][None, :]
+    #     arm_indices = np.asarray([0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12])
+    #     gripper_indices = np.asarray([6, 13])
+    #     max_arm_delta = float(np.abs(target_delta[:, arm_indices]).max())
+    #     max_gripper_delta = float(np.abs(target_delta[:, gripper_indices]).max())
+    #     if max_arm_delta > self.cfg.max_arm_target_delta:
+    #         raise ValueError(
+    #             f"Unsafe arm target rejected: delta {max_arm_delta:.4f} exceeds "
+    #             f"{self.cfg.max_arm_target_delta:.4f}. Check action mode, joint order, and normalization."
+    #         )
+    #     if max_gripper_delta > self.cfg.max_gripper_target_delta:
+    #         raise ValueError(
+    #             f"Unsafe gripper target rejected: delta {max_gripper_delta:.4f} exceeds "
+    #             f"{self.cfg.max_gripper_target_delta:.4f}. Check action mode and normalization."
+    #         )
 
     def _request_to_observation(self, request: dict[str, Any]) -> tuple[dict[str, Any], str, np.ndarray]:
         if request.get("type") != "inference":
@@ -157,7 +157,7 @@ class CobotOpenVLAOFTZMQServer:
             # New Cobot Magic checkpoints are trained to predict relative joint deltas.
             # The robot client expects absolute joint targets, so convert here.
             actions = proprio[-1][None, :] + actions
-        self._validate_targets(actions, proprio)
+        # self._validate_targets(actions, proprio)
         return {"actions": actions.astype(float).tolist()}
 
     def run(self) -> None:

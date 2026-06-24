@@ -47,7 +47,7 @@ COBOT_MAGIC_CONSTANTS = {
     "ACTION_DIM": 14,
     "PROPRIO_DIM": 14,
     # Relative joint deltas use bounds normalization; avoid quantile clipping.
-    "ACTION_PROPRIO_NORMALIZATION_TYPE": NormalizationType.BOUNDS,
+    "ACTION_PROPRIO_NORMALIZATION_TYPE": NormalizationType.BOUNDS_Q99,
 }
 
 BRIDGE_CONSTANTS = {

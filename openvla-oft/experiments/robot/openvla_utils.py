@@ -292,8 +292,8 @@ def get_vla(cfg: Any) -> torch.nn.Module:
     adapter_path = checkpoint_path / "lora_adapter"
     model_path = cfg.pretrained_checkpoint
     if cfg.use_film and adapter_path.is_dir():
-        model_path = getattr(cfg, "base_model_path", "") or "openvla/openvla-7b"
-        print(f"Loading base VLA from {model_path}; LoRA will be loaded from {adapter_path}")
+        model_path = cfg.pretrained_checkpoint
+        print(f"Loading local OFT checkpoint from {model_path}; LoRA from {adapter_path}")
 
     # Load the model
     vla = AutoModelForVision2Seq.from_pretrained(
