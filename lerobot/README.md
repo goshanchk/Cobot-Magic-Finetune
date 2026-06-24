@@ -270,41 +270,33 @@ tail -f logs_smolvla/stdout/cobot_magic_smolvla_2gpu_full_unfrozen_state14_left1
 
 The robot client uses a ZeroMQ `REQ` socket and expects a server-side `REP` socket. The SmolVLA adapter listens on `0.0.0.0:5055`, receives 3 JPEG-base64 cameras plus a 14D joint proprio vector, predicts relative joint deltas, and returns absolute joint actions with shape `[num_actions, 14]`.
 
-Checkpoint layout expected by LeRobot:
-
-```text
-logs_smolvla/outputs/cobot_magic_smolvla_2gpu_50k/checkpoints/050000/
-  pretrained_model/
-    config.json
-    model.safetensors
-    policy_preprocessor.json
-    policy_postprocessor.json
-    train_config.json
-  training_state/
-```
-
-Run from the LeRobot repo root:
+Run the equal-weight checkpoint from the LeRobot repo root:
 
 ```bash
 cd /path/to/lerobot
-export SMOLVLA_CHECKPOINT=/path/to/checkpoints/050000
 
 CUDA_VISIBLE_DEVICES=0 \
 .venv/bin/python src/lerobot/scripts/inference/cobot_smolvla_zmq.py \
-  --checkpoint_path ${SMOLVLA_CHECKPOINT} \
+  --checkpoint_path logs_smolvla/outputs/cobot_magic_smolvla_2gpu_full_unfrozen_state14_relative_chunk24_50k/checkpoints/050000 \
   --device cuda:0 \
   --host 0.0.0.0 \
-  --port 5055
+  --port 5055 \
+  --max_actions 1
 ```
 
-You may pass either the checkpoint directory or its `pretrained_model` subdirectory:
+Run the checkpoint trained with `1.25` loss weight for the left arm:
 
-```text
-/path/to/checkpoints/050000
-/path/to/checkpoints/050000/pretrained_model
+```bash
+cd /path/to/lerobot
+
+CUDA_VISIBLE_DEVICES=0 \
+.venv/bin/python src/lerobot/scripts/inference/cobot_smolvla_zmq.py \
+  --checkpoint_path logs_smolvla/outputs/cobot_magic_smolvla_2gpu_full_unfrozen_state14_left125_faststats_50k/checkpoints/050000 \
+  --device cuda:0 \
+  --host 0.0.0.0 \
+  --port 5055 \
+  --max_actions 1
 ```
-
-Default Cobot Magic SmolVLA checkpoints are trained to predict relative joint deltas, and this server converts them to absolute joint targets before replying. Use `--absolute_actions` only for old checkpoints that already output absolute targets.
 
 ## Tmux
 

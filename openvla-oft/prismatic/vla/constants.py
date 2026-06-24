@@ -60,6 +60,17 @@ BRIDGE_CONSTANTS = {
 
 # Function to detect robot platform from command line arguments
 def detect_robot_platform():
+    configured_platform = os.environ.get("ROBOT_PLATFORM")
+    if configured_platform:
+        configured_platform = configured_platform.strip().upper().replace("-", "_")
+        supported_platforms = {"LIBERO", "ALOHA", "COBOT_MAGIC", "BRIDGE"}
+        if configured_platform not in supported_platforms:
+            raise ValueError(
+                f"Unsupported ROBOT_PLATFORM={configured_platform!r}; "
+                f"expected one of {sorted(supported_platforms)}"
+            )
+        return configured_platform
+
     cmd_args = " ".join(sys.argv).lower()
 
     if "libero" in cmd_args:

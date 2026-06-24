@@ -72,6 +72,48 @@ class CobotOpenVLAOFTZMQServer:
                 f"Action un-norm key {cfg.unnorm_key} not found in VLA norm_stats. "
                 f"Available keys: {list(self.vla.norm_stats.keys())}"
             )
+            action_stats = self.vla.norm_stats[cfg.unnorm_key]["action"]
+            proprio_stats = self.vla.norm_stats[cfg.unnorm_key]["proprio"]
+            if len(action_stats["min"]) != ACTION_DIM or len(proprio_stats["min"]) != PROPRIO_DIM:
+                raise ValueError("Checkpoint statistics do not match the configured Cobot Magic dimensions")
+            print(f"Action mode: {'relative -> absolute' if cfg.use_relative_actions else 'absolute'}")
+            print(f"Normalization key: {cfg.unnorm_key}; action/proprio dims: {ACTION_DIM}/{PROPRIO_DIM}")
+
+    def _warn_proprio_ood(self, proprio: np.ndarray) -> None:
+        if not self.cfg.unnorm_key:
+            return
+        stats = self.vla.norm_stats[self.cfg.unnorm_key]["proprio"]
+        low = np.asarray(stats["min"], dtype=np.float32)
+        high = np.asarray(stats["max"], dtype=np.float32)
+        span = np.maximum(high - low, 1e-6)
+        outside = np.flatnonzero((proprio < low - 0.05 * span) | (proprio > high + 0.05 * span))
+        if outside.size:
+            logging.warning(
+                "Proprio OOD dimensions %s; current=%s, train_min=%s, train_max=%s",
+                outside.tolist(), proprio[outside].tolist(), low[outside].tolist(), high[outside].tolist(),
+            )
+
+    def _validate_targets(self, actions: np.ndarray, proprio: np.ndarray) -> None:
+        if not np.isfinite(proprio).all():
+            raise ValueError("Received non-finite proprio; refusing to move the robot")
+        if not np.isfinite(actions).all():
+            raise ValueError("Model produced non-finite actions; refusing to move the robot")
+
+        target_delta = actions - proprio[-1][None, :]
+        arm_indices = np.asarray([0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12])
+        gripper_indices = np.asarray([6, 13])
+        max_arm_delta = float(np.abs(target_delta[:, arm_indices]).max())
+        max_gripper_delta = float(np.abs(target_delta[:, gripper_indices]).max())
+        if max_arm_delta > self.cfg.max_arm_target_delta:
+            raise ValueError(
+                f"Unsafe arm target rejected: delta {max_arm_delta:.4f} exceeds "
+                f"{self.cfg.max_arm_target_delta:.4f}. Check action mode, joint order, and normalization."
+            )
+        if max_gripper_delta > self.cfg.max_gripper_target_delta:
+            raise ValueError(
+                f"Unsafe gripper target rejected: delta {max_gripper_delta:.4f} exceeds "
+                f"{self.cfg.max_gripper_target_delta:.4f}. Check action mode and normalization."
+            )
 
     def _request_to_observation(self, request: dict[str, Any]) -> tuple[dict[str, Any], str, np.ndarray]:
         if request.get("type") != "inference":
@@ -88,6 +130,7 @@ class CobotOpenVLAOFTZMQServer:
             raise ValueError(f"Expected proprio shape [T, {PROPRIO_DIM}], got {proprio.shape}")
 
         # OpenVLA-OFT expects a primary full image plus optional wrist images.
+        self._warn_proprio_ood(proprio[-1])
         # Dataset mapping: camera_2=front/high, camera_1=left wrist, camera_0=right wrist.
         observation = {
             "full_image": _latest_image(cam2, "images_camera_2"),
@@ -114,6 +157,7 @@ class CobotOpenVLAOFTZMQServer:
             # New Cobot Magic checkpoints are trained to predict relative joint deltas.
             # The robot client expects absolute joint targets, so convert here.
             actions = proprio[-1][None, :] + actions
+        self._validate_targets(actions, proprio)
         return {"actions": actions.astype(float).tolist()}
 
     def run(self) -> None:
@@ -139,6 +183,7 @@ class OpenVLAOFTZMQConfig:
 
     model_family: str = "openvla"
     pretrained_checkpoint: Union[str, Path] = ""
+    base_model_path: Union[str, Path] = "openvla/openvla-7b"
     use_l1_regression: bool = True
     use_diffusion: bool = False
     num_diffusion_steps_train: int = 50
@@ -154,6 +199,8 @@ class OpenVLAOFTZMQConfig:
     use_relative_actions: bool = True
     load_in_8bit: bool = False
     load_in_4bit: bool = False
+    max_arm_target_delta: float = 0.75
+    max_gripper_target_delta: float = 3.0
     seed: int = 7
 
 

@@ -212,46 +212,45 @@ Watch:
 tail -f ${REPO_ROOT}/logs/stdout/openvla_unfrozen_smoke.log
 ```
 
-## Full Training
-
-For an 8-GPU node, expose 8 GPUs and use `--nproc-per-node 8`:
+## Full Training: Relative Joint Actions
 
 ```bash
-tmux new -d -s openvla_full_lora16_50k \
+tmux new -d -s openvla_relative_lora32_20k \
   "cd ${REPO_ROOT} && \
-   CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+   ROBOT_PLATFORM=COBOT_MAGIC \
+   COBOT_MAGIC_NUM_ACTIONS_CHUNK=24 \
+   CUDA_VISIBLE_DEVICES=0,1,2,3 \
    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
    NCCL_DEBUG=INFO \
    TORCH_NCCL_ASYNC_ERROR_HANDLING=1 \
-   CUDA_DEVICE_MAX_CONNECTIONS=1 \
    micromamba run -n finetune_env torchrun \
-   --standalone --nnodes 1 --nproc-per-node 8 \
+   --standalone --nnodes 1 --nproc-per-node 4 \
    vla-scripts/finetune.py \
    --vla_path openvla/openvla-7b \
    --dataset_format lerobot \
    --data_root_dir ${DATASET_DIR} \
    --dataset_name cobot_magic_sber \
    --run_root_dir ${REPO_ROOT}/logs/runs \
-   --distributed_backend fsdp \
+   --distributed_backend ddp \
    --freeze_vla False \
    --use_l1_regression True \
    --use_diffusion False \
    --use_film True \
    --num_images_in_input 3 \
    --use_proprio True \
-   --batch_size 8 \
-   --grad_accumulation_steps 1 \
+   --batch_size 2 \
+   --grad_accumulation_steps 2 \
    --learning_rate 2e-4 \
-   --lr_warmup_steps 1000 \
-   --num_steps_before_decay 40000 \
-   --max_steps 50000 \
+   --lr_warmup_steps 500 \
+   --num_steps_before_decay 16000 \
+   --max_steps 20000 \
    --use_val_set True \
-   --val_freq 2000 \
+   --val_freq 1000 \
    --val_time_limit 120 \
-   --save_freq 5000 \
-   --merge_lora_during_training False \
+   --save_freq 2000 \
+   --merge_lora_during_training True \
    --image_aug True \
-   --lora_rank 16 \
+   --lora_rank 32 \
    --action_head_hidden_dim 2048 \
    --action_head_num_blocks 1 \
    --logger tensorboard \
@@ -263,16 +262,16 @@ tmux new -d -s openvla_full_lora16_50k \
    --lerobot_episode_cache_size 6 \
    --lerobot_use_precomputed_stats True \
    --lerobot_sample_by_episode True \
-   --run_id_note full--8gpu--bs64-noaccum--3cam--film--chunk24--joints14--lora16--lr2e-4--50k--h2048 \
-   2>&1 | tee logs/stdout/openvla_full_lora16_50k.log"
+   --run_id_note relative--ddp4--bs2x4xacc2--3cam--film--chunk24--joints14--lora32--lr2e-4--20k--h2048 \
+   2>&1 | tee logs/stdout/openvla_relative_lora32_20k.log"
 ```
 
 ## Logs
 
-Stdout logs:
+Stdout:
 
 ```bash
-tail -f ${REPO_ROOT}/logs/stdout/openvla_full_lora16_50k.log
+tail -f ${REPO_ROOT}/logs/stdout/openvla_relative_lora32_20k.log
 ```
 
 TensorBoard:
@@ -285,25 +284,21 @@ micromamba run -n finetune_env tensorboard \
   --port 6006
 ```
 
-Open through localhost:
+Open `http://localhost:6006` in the browser.
 
-```text
-http://localhost:6006
-```
-
-Tmux checking:
+Tmux:
 
 ```bash
 tmux ls
-tmux attach -t openvla_full_train
+tmux attach -t openvla_relative_lora32_20k
 # detach without stopping: Ctrl-b, then d
 ```
 
 ## Inference: ZeroMQ Server
 
-The robot client uses a ZeroMQ `REQ` socket and expects a server-side `REP` socket. The OpenVLA-OFT adapter listens on `0.0.0.0:5055`, receives 3 JPEG-base64 cameras plus a 14D joint proprio vector, and returns absolute joint actions with shape `[num_actions, 14]`.
+The robot client uses a ZeroMQ `REQ` socket and expects a server-side `REP` socket. The adapter receives 3 JPEG-base64 cameras plus a 14D joint proprio vector and always returns absolute joint targets with shape `[num_actions, 14]`.
 
-Checkpoint layout expected by the loader:
+Expected checkpoint layout:
 
 ```text
 /path/to/openvla_20000_chkpt/
@@ -316,25 +311,31 @@ Checkpoint layout expected by the loader:
   model-*.safetensors
 ```
 
-Run from the OpenVLA-OFT repo root:
+For a checkpoint trained by the relative-action command above:
 
 ```bash
 cd /path/to/openvla-oft
 export OPENVLA_CHECKPOINT=/path/to/openvla_20000_chkpt
 
+ROBOT_PLATFORM=COBOT_MAGIC \
+COBOT_MAGIC_NUM_ACTIONS_CHUNK=24 \
 CUDA_VISIBLE_DEVICES=0 \
 micromamba run -n finetune_env python vla-scripts/cobot_openvlaoft_zmq.py \
-  --pretrained_checkpoint ${OPENVLA_CHECKPOINT} \
+  --pretrained_checkpoint "${OPENVLA_CHECKPOINT}" \
+  --base_model_path openvla/openvla-7b \
   --unnorm_key cobot_magic_sber \
   --use_l1_regression True \
   --use_diffusion False \
   --use_film True \
   --num_images_in_input 3 \
   --use_proprio True \
-  --lora_rank 16 \
+  --lora_rank 32 \
+  --action_head_hidden_dim 2048 \
+  --action_head_num_blocks 1 \
+  --use_relative_actions True \
+  --max_arm_target_delta 0.75 \
+  --max_gripper_target_delta 3.0 \
   --host 0.0.0.0 \
   --port 5055
 ```
-
-Use `--use_film False` only for checkpoints trained without FiLM. New Cobot Magic checkpoints predict relative joint deltas, and `cobot_openvlaoft_zmq.py` converts them to absolute targets by default. Use `--use_relative_actions False` only for old absolute-action checkpoints.
 

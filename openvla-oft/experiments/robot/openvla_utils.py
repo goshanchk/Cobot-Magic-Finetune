@@ -288,9 +288,16 @@ def get_vla(cfg: Any) -> torch.nn.Module:
         update_auto_map(cfg.pretrained_checkpoint)
         check_model_logic_mismatch(cfg.pretrained_checkpoint)
 
+    checkpoint_path = Path(cfg.pretrained_checkpoint)
+    adapter_path = checkpoint_path / "lora_adapter"
+    model_path = cfg.pretrained_checkpoint
+    if cfg.use_film and adapter_path.is_dir():
+        model_path = getattr(cfg, "base_model_path", "") or "openvla/openvla-7b"
+        print(f"Loading base VLA from {model_path}; LoRA will be loaded from {adapter_path}")
+
     # Load the model
     vla = AutoModelForVision2Seq.from_pretrained(
-        cfg.pretrained_checkpoint,
+        model_path,
         # attn_implementation="flash_attention_2",
         torch_dtype=torch.bfloat16,
         load_in_8bit=cfg.load_in_8bit,
@@ -329,17 +336,25 @@ def _apply_film_to_vla(vla: torch.nn.Module, cfg: Any) -> torch.nn.Module:
     Returns:
         torch.nn.Module: VLA model with FiLM applied
     """
-    from peft import LoraConfig, get_peft_model
+    from peft import PeftModel
 
-    # Apply LoRA configuration
-    lora_config = LoraConfig(
-        r=cfg.lora_rank,
-        lora_alpha=min(cfg.lora_rank, 16),
-        lora_dropout=0.0,
-        target_modules="all-linear",
-        init_lora_weights="gaussian",
-    )
-    vla = get_peft_model(vla, lora_config)
+    adapter_path = Path(cfg.pretrained_checkpoint) / "lora_adapter"
+    if not adapter_path.is_dir():
+        raise FileNotFoundError(
+            f"FiLM checkpoint requires a trained LoRA adapter at {adapter_path}; "
+            "refusing to initialize random LoRA weights for inference"
+        )
+
+    with open(adapter_path / "adapter_config.json", "r") as f:
+        adapter_config = json.load(f)
+    adapter_rank = int(adapter_config["r"])
+    if adapter_rank != cfg.lora_rank:
+        raise ValueError(
+            f"Configured LoRA rank {cfg.lora_rank} does not match checkpoint rank {adapter_rank}"
+        )
+
+    vla = PeftModel.from_pretrained(vla, adapter_path)
+    print(f"Loaded trained LoRA adapter from {adapter_path} (rank={adapter_rank})")
 
     # Create and apply FiLMed vision backbone
     new_vision_backbone = FiLMedPrismaticVisionBackbone(
