@@ -353,22 +353,24 @@ def _apply_film_to_vla(vla: torch.nn.Module, cfg: Any) -> torch.nn.Module:
             f"Configured LoRA rank {cfg.lora_rank} does not match checkpoint rank {adapter_rank}"
         )
 
-    vla = PeftModel.from_pretrained(vla, adapter_path)
+    llm_dim = int(vla.config.text_config.hidden_size)
+    peft_vla = PeftModel.from_pretrained(vla, adapter_path)
     print(f"Loaded trained LoRA adapter from {adapter_path} (rank={adapter_rank})")
 
-    # Create and apply FiLMed vision backbone
-    new_vision_backbone = FiLMedPrismaticVisionBackbone(
-        vision_backbone=vla.vision_backbone, llm_dim=vla.llm_dim,
-    )
-    vla.model.vision_backbone = new_vision_backbone
+    # Work with the underlying OpenVLA model while keeping the loaded LoRA modules.
+    vla = peft_vla.get_base_model()
+    vla.llm_dim = llm_dim
 
-    # Load vision backbone checkpoint
+    # Create and apply FiLMed vision backbone
+    vla.vision_backbone = FiLMedPrismaticVisionBackbone(
+        vision_backbone=vla.vision_backbone,
+        llm_dim=llm_dim,
+    )
+
+    # Load the trained FiLM + vision LoRA checkpoint.
     checkpoint_path = find_checkpoint_file(cfg.pretrained_checkpoint, "vision_backbone")
     state_dict = torch.load(checkpoint_path, weights_only=True)
-    vla.model.vision_backbone.load_state_dict(state_dict)
-
-    # Use the model component instead of wrapper and convert to bfloat16
-    vla = vla.model
+    vla.vision_backbone.load_state_dict(state_dict)
     vla.vision_backbone = vla.vision_backbone.to(torch.bfloat16)
 
     return vla
