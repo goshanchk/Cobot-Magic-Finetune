@@ -222,11 +222,16 @@ class FiLMedPrismaticVisionBackbone(nn.Module):
 
     def get_num_images_in_input(self) -> int:
         """Returns the number of input images for the vision backbone."""
-        return self.vision_backbone.get_num_images_in_input()
+        if hasattr(self.vision_backbone, "get_num_images_in_input"):
+            return self.vision_backbone.get_num_images_in_input()
+        return int(getattr(self.vision_backbone, "num_images_in_input", 1))
 
     def set_num_images_in_input(self, num_images_in_input: int) -> None:
         """Sets the number of input images for the vision backbone."""
-        self.vision_backbone.set_num_images_in_input(num_images_in_input)
+        if hasattr(self.vision_backbone, "set_num_images_in_input"):
+            self.vision_backbone.set_num_images_in_input(num_images_in_input)
+        else:
+            self.vision_backbone.num_images_in_input = num_images_in_input
 
     def forward(self, pixel_values: torch.Tensor, language_embeddings: torch.Tensor) -> torch.Tensor:
         """
