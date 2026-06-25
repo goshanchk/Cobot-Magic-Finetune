@@ -320,13 +320,6 @@ Expected checkpoint layout:
   dataset_statistics.json
   cobot_checkpoint_metadata.json
 ```
-
-For new checkpoints, `cobot_checkpoint_metadata.json` stores the exact normalization key, normalization type, action/state representation, and a SHA-256 fingerprint of `dataset_statistics.json`. The server refuses to start if the statistics file, `--unnorm_key`, dimensions, or normalization semantics do not match training.
-
-Training normalizes relative 24-step action chunks and absolute 14D proprio with Cobot Magic `bounds` statistics. Inference loads that same checkpoint-local file, applies the same bounds formula to proprio, and uses the inverse formula for actions before adding current proprio exactly once.
-
-Legacy checkpoints without this metadata are intentionally rejected by the strict server. Do not copy statistics from another run to make them load; retrain or verify and migrate the checkpoint explicitly.
-
 For a checkpoint trained by the relative-action command above:
 
 ```bash
