@@ -18,13 +18,23 @@ import pyarrow.parquet as pq
 import torch
 from PIL import Image
 from torch.utils.data import Dataset, IterableDataset
+from torchvision.transforms import ColorJitter, RandomAffine, RandomApply, RandomOrder, RandomResizedCrop
 from transformers import PreTrainedTokenizerBase
 
 from prismatic.models.backbones.llm.prompting import PromptBuilder
 from prismatic.models.backbones.vision import ImageTransform
 from prismatic.util.data_utils import tree_map
 from prismatic.vla.action_tokenizer import ActionTokenizer
-from prismatic.vla.constants import ACTION_DIM, ACTION_PROPRIO_NORMALIZATION_TYPE, ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX, NUM_ACTIONS_CHUNK, PROPRIO_DIM, STOP_INDEX
+from prismatic.vla.constants import (
+    ACTION_DIM,
+    ACTION_PROPRIO_NORMALIZATION_TYPE,
+    ACTION_TOKEN_BEGIN_IDX,
+    IGNORE_INDEX,
+    NUM_ACTIONS_CHUNK,
+    PROPRIO_DIM,
+    STOP_INDEX,
+    NormalizationType,
+)
 
 @dataclass
 class RLDSBatchTransform:
@@ -142,7 +152,17 @@ def _read_video_frames(path: Path) -> np.ndarray:
 
 def _bounds_normalize(values: np.ndarray, low: np.ndarray, high: np.ndarray) -> np.ndarray:
     denom = np.maximum(high - low, 1e-6)
-    return (2.0 * (values - low) / denom - 1.0).astype(np.float32)
+    return np.clip(2.0 * (values - low) / denom - 1.0, -1.0, 1.0).astype(np.float32)
+
+
+def _normalization_bounds(stats: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
+    if ACTION_PROPRIO_NORMALIZATION_TYPE == NormalizationType.BOUNDS:
+        low_key, high_key = "min", "max"
+    elif ACTION_PROPRIO_NORMALIZATION_TYPE == NormalizationType.BOUNDS_Q99:
+        low_key, high_key = "q01", "q99"
+    else:
+        raise ValueError(f"Unsupported direct LeRobot normalization: {ACTION_PROPRIO_NORMALIZATION_TYPE}")
+    return np.asarray(stats[low_key], dtype=np.float32), np.asarray(stats[high_key], dtype=np.float32)
 
 
 def _stats_dict(values: np.ndarray) -> Dict[str, Any]:
@@ -164,6 +184,55 @@ def _relative_actions_from_states(actions: np.ndarray, states: np.ndarray) -> np
     if actions.shape != states.shape:
         raise ValueError(f"Expected action/state shape match for relative actions, got {actions.shape} and {states.shape}")
     return (actions - states).astype(np.float32)
+
+
+def _relative_action_chunks(actions: np.ndarray, states: np.ndarray) -> np.ndarray:
+    """Build the exact labels used by training: future targets relative to the current state."""
+    if actions.shape != states.shape:
+        raise ValueError(f"Expected action/state shape match, got {actions.shape} and {states.shape}")
+    timesteps = np.arange(actions.shape[0])
+    chunks = []
+    for offset in range(NUM_ACTIONS_CHUNK):
+        future = np.minimum(timesteps + offset, actions.shape[0] - 1)
+        chunks.append(actions[future] - states)
+    return np.stack(chunks, axis=1).astype(np.float32)
+
+
+def _relative_action_chunk_stats(
+    episode_arrays: List[Tuple[np.ndarray, np.ndarray]], quantile_sample_size: int = 200_000
+) -> Dict[str, Any]:
+    """Compute stats for the same chunk-relative representation consumed by the model."""
+    total_rows = sum(actions.shape[0] * NUM_ACTIONS_CHUNK for actions, _ in episode_arrays)
+    sample_stride = max(1, int(np.ceil(total_rows / quantile_sample_size)))
+    count = 0
+    total = np.zeros(ACTION_DIM, dtype=np.float64)
+    total_sq = np.zeros(ACTION_DIM, dtype=np.float64)
+    value_min = np.full(ACTION_DIM, np.inf, dtype=np.float64)
+    value_max = np.full(ACTION_DIM, -np.inf, dtype=np.float64)
+    quantile_samples = []
+
+    for actions, states in episode_arrays:
+        values = _relative_action_chunks(actions, states).reshape(-1, ACTION_DIM)
+        count += values.shape[0]
+        total += values.sum(axis=0, dtype=np.float64)
+        total_sq += np.square(values, dtype=np.float64).sum(axis=0)
+        value_min = np.minimum(value_min, values.min(axis=0))
+        value_max = np.maximum(value_max, values.max(axis=0))
+        quantile_samples.append(values[::sample_stride])
+
+    if count == 0:
+        raise ValueError("Cannot compute action statistics from an empty training split")
+    mean = total / count
+    variance = np.maximum(total_sq / count - np.square(mean), 0.0)
+    sample = np.concatenate(quantile_samples, axis=0)
+    return {
+        "mean": mean.tolist(),
+        "std": np.sqrt(variance).tolist(),
+        "max": value_max.tolist(),
+        "min": value_min.tolist(),
+        "q01": np.quantile(sample, 0.01, axis=0).tolist(),
+        "q99": np.quantile(sample, 0.99, axis=0).tolist(),
+    }
 
 
 def _load_precomputed_lerobot_statistics(
@@ -224,11 +293,33 @@ class LeRobotBatchTransform:
     predict_stop_token: bool = True
     use_wrist_image: bool = False
     use_proprio: bool = False
+    train: bool = True
+    image_aug: bool = False
+    proprio_noise_std: float = 0.0
+    proprio_dropout_prob: float = 0.0
+
+    def __post_init__(self) -> None:
+        self.image_augmentation = None
+        if self.train and self.image_aug:
+            self.image_augmentation = RandomOrder(
+                [
+                    RandomResizedCrop(224, scale=(0.9, 1.0), ratio=(0.95, 1.05)),
+                    RandomApply(
+                        [ColorJitter(brightness=0.2, contrast=0.2, saturation=0.3, hue=0.05)], p=0.8
+                    ),
+                    RandomApply([RandomAffine(degrees=5, translate=(0.05, 0.05))], p=0.5),
+                ]
+            )
+
+    def _transform_image(self, image: np.ndarray) -> torch.Tensor:
+        pil_image = Image.fromarray(image)
+        if self.image_augmentation is not None:
+            pil_image = self.image_augmentation(pil_image)
+        return self.image_transform(pil_image)
 
     def __call__(self, sample: Dict[str, Any]) -> Dict[str, Any]:
         current_action = sample["actions"][0]
         actions = sample["actions"]
-        img = Image.fromarray(sample["image"])
         lang = sample["language_instruction"].lower()
 
         prompt_builder = self.prompt_builder_fn("openvla")
@@ -247,7 +338,7 @@ class LeRobotBatchTransform:
         input_ids = self.base_tokenizer(prompt_builder.get_prompt(), add_special_tokens=True).input_ids
         labels = list(input_ids)
         input_ids, labels = torch.tensor(input_ids), torch.tensor(labels)
-        pixel_values = self.image_transform(img)
+        pixel_values = self._transform_image(sample["image"])
 
         labels[: -(action_chunk_len + 1)] = IGNORE_INDEX
         if not self.predict_stop_token:
@@ -265,11 +356,17 @@ class LeRobotBatchTransform:
             wrist_pixels = []
             for key in ("left_wrist_image", "right_wrist_image"):
                 if key in sample:
-                    wrist_pixels.append(self.image_transform(Image.fromarray(sample[key])))
+                    wrist_pixels.append(self._transform_image(sample[key]))
             if wrist_pixels:
                 return_dict["pixel_values_wrist"] = torch.cat(wrist_pixels, dim=0)
         if self.use_proprio:
-            return_dict["proprio"] = sample["proprio"]
+            proprio = np.asarray(sample["proprio"], dtype=np.float32).copy()
+            if self.train and self.proprio_noise_std > 0:
+                proprio += np.random.normal(0.0, self.proprio_noise_std, size=proprio.shape).astype(np.float32)
+                proprio = np.clip(proprio, -1.0, 1.0)
+            if self.train and self.proprio_dropout_prob > 0 and np.random.random() < self.proprio_dropout_prob:
+                proprio.fill(0.0)
+            return_dict["proprio"] = proprio
 
         return return_dict
 
@@ -290,6 +387,7 @@ class LeRobotDataset(IterableDataset):
         normalization_statistics: Dict[str, Any] | None = None,
         use_precomputed_stats: bool = True,
         sample_by_episode: bool = True,
+        seed: int = 42,
     ) -> None:
         if dataset_name != "cobot_magic_sber":
             raise ValueError(f"LeRobotDataset currently supports only cobot_magic_sber, got {dataset_name}")
@@ -307,6 +405,7 @@ class LeRobotDataset(IterableDataset):
         self._episode_cache: OrderedDict[int, Dict[str, np.ndarray]] = OrderedDict()
         self.episode_cache_size = episode_cache_size
         self.sample_by_episode = sample_by_episode
+        self.seed = seed
 
         episodes_by_index = {int(row["episode_index"]): int(row["length"]) for row in _load_jsonl(self.data_root_dir / "meta" / "episodes.jsonl")}
         self.transitions_by_episode: Dict[int, List[int]] = {}
@@ -317,16 +416,16 @@ class LeRobotDataset(IterableDataset):
             self.transitions_by_episode[episode_index] = steps
             self.transition_indices.extend((episode_index, t) for t in steps)
 
-        relative_actions_for_stats = []
         if normalization_statistics is None:
+            episode_arrays = []
             for episode_index in self.episode_indices:
                 table = pq.read_table(_episode_parquet_path(self.data_root_dir, self.info, episode_index))
                 actions = np.asarray(table["action"].to_pylist(), dtype=np.float32)
                 states = np.asarray(table["observation.state"].to_pylist(), dtype=np.float32)
                 actions = _select_joint_dims(actions, ACTION_DIM, "action", episode_index)
                 states = _select_joint_dims(states, ACTION_DIM, "observation.state", episode_index)
-                relative_actions_for_stats.append(_relative_actions_from_states(actions, states))
-            relative_action_stats = _stats_dict(np.concatenate(relative_actions_for_stats, axis=0))
+                episode_arrays.append((actions, states))
+            relative_action_stats = _relative_action_chunk_stats(episode_arrays)
         else:
             relative_action_stats = None
 
@@ -355,10 +454,8 @@ class LeRobotDataset(IterableDataset):
                 }
             }
         stats = self.dataset_statistics[dataset_name]
-        self.action_low = np.asarray(stats["action"]["min"], dtype=np.float32)
-        self.action_high = np.asarray(stats["action"]["max"], dtype=np.float32)
-        self.proprio_low = np.asarray(stats["proprio"]["min"], dtype=np.float32)
-        self.proprio_high = np.asarray(stats["proprio"]["max"], dtype=np.float32)
+        self.action_low, self.action_high = _normalization_bounds(stats["action"])
+        self.proprio_low, self.proprio_high = _normalization_bounds(stats["proprio"])
 
     def __len__(self) -> int:
         return len(self.transition_indices)
@@ -431,7 +528,7 @@ class LeRobotDataset(IterableDataset):
 
         epoch = 0
         while True:
-            rng = random.Random(17 + epoch)
+            rng = random.Random(self.seed + epoch)
             if self.sample_by_episode:
                 episode_indices = list(self.episode_indices)
                 if self.train:

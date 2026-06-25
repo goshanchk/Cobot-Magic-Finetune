@@ -5,8 +5,10 @@ Fine-tunes OpenVLA via LoRA.
 """
 
 import contextlib
+import hashlib
 import json
 import os
+import random
 
 os.environ.setdefault("USE_TF", "0")
 
@@ -17,6 +19,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple, Type
 
 import draccus
+import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -63,6 +66,8 @@ from prismatic.vla.constants import (
     ACTION_PROPRIO_NORMALIZATION_TYPE,
     NUM_ACTIONS_CHUNK,
     PROPRIO_DIM,
+    ROBOT_PLATFORM,
+    NormalizationType,
 )
 from prismatic.vla.datasets import LeRobotBatchTransform, LeRobotDataset, RLDSBatchTransform, RLDSDataset
 
@@ -85,6 +90,47 @@ def save_training_dataset_statistics(dataset_statistics, output_dir):
     with out_path.open("w") as f_json:
         json.dump(_json_safe(dataset_statistics), f_json, indent=2)
     print(f"Saved dataset statistics file at path {out_path}")
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def save_cobot_checkpoint_metadata(cfg, output_dir):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    statistics_path = output_dir / "dataset_statistics.json"
+    if not statistics_path.is_file():
+        raise FileNotFoundError(f"Cannot save checkpoint metadata without {statistics_path}")
+    metadata = {
+        "robot_platform": "COBOT_MAGIC",
+        "action_mode": "relative",
+        "action_dim": ACTION_DIM,
+        "proprio_dim": PROPRIO_DIM,
+        "action_chunk_length": NUM_ACTIONS_CHUNK,
+        "normalization_type": ACTION_PROPRIO_NORMALIZATION_TYPE.value,
+        "normalization_key": cfg.dataset_name,
+        "action_statistics_representation": "chunk_relative_to_current_state",
+        "proprio_statistics_representation": "absolute_joint_state",
+        "dataset_statistics_sha256": _file_sha256(statistics_path),
+        "use_l1_regression": cfg.use_l1_regression,
+        "use_diffusion": cfg.use_diffusion,
+        "use_film": cfg.use_film,
+        "use_proprio": cfg.use_proprio,
+        "num_images_in_input": cfg.num_images_in_input,
+        "lora_rank": cfg.lora_rank,
+        "action_head_hidden_dim": cfg.action_head_hidden_dim,
+        "action_head_num_blocks": cfg.action_head_num_blocks,
+        "num_diffusion_steps_train": cfg.num_diffusion_steps_train,
+        "seed": cfg.seed,
+    }
+    out_path = output_dir / "cobot_checkpoint_metadata.json"
+    with out_path.open("w") as f_json:
+        json.dump(metadata, f_json, indent=2)
+    print(f"Saved Cobot checkpoint metadata at path {out_path}")
 
 
 def _move_to_cuda(tensor: torch.Tensor, device_id: int, dtype: Optional[torch.dtype] = None) -> torch.Tensor:
@@ -130,7 +176,7 @@ class FinetuneConfig:
     # Training configuration
     batch_size: int = 8                              # Batch size per device (total batch size = batch_size * num GPUs)
     learning_rate: float = 5e-4                      # Learning rate
-    lr_warmup_steps: int = 0                         # Number of steps to warm up learning rate (from 10% to 100%)
+    lr_warmup_steps: int = 0                         # Number of steps to warm up learning rate (from 10 to 100 percent)
     num_steps_before_decay: int = 100_000            # Number of steps before LR decays by 10x
     grad_accumulation_steps: int = 1                 # Number of gradient accumulation steps
     max_steps: int = 200_000                         # Max number of training steps
@@ -143,7 +189,13 @@ class FinetuneConfig:
     resume: bool = False                             # If True, resumes from checkpoint
     resume_step: Optional[int] = None                # (When `resume==True`) Step number that we are resuming from
     image_aug: bool = True                           # If True, trains with image augmentations (HIGHLY RECOMMENDED)
+    proprio_noise_std: float = 0.0                   # Gaussian noise std in normalized proprio space (train only)
+    proprio_dropout_prob: float = 0.0                # Probability of replacing the normalized proprio vector with zeros
     diffusion_sample_freq: int = 50                  # (When `use_diffusion==True`) Frequency for sampling in steps
+    gripper_loss_weight: float = 1.0                 # Weight for action dimensions 6 and 13
+    late_chunk_start: int = 10                       # First timestep receiving late_chunk_loss_weight
+    late_chunk_loss_weight: float = 1.0              # Weight for the tail of the action chunk
+    seed: int = 42                                   # Reproducibility seed
 
     # LoRA
     use_lora: bool = True                            # If True, uses LoRA fine-tuning
@@ -409,6 +461,9 @@ def run_forward_pass(
     compute_diffusion_l1=False,
     num_diffusion_steps_train=None,
     freeze_vla=False,
+    gripper_loss_weight=1.0,
+    late_chunk_start=10,
+    late_chunk_loss_weight=1.0,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
     Compute model forward pass and metrics for both training and validation.
@@ -436,6 +491,14 @@ def run_forward_pass(
             metrics_dict: Dictionary of computed metrics (detached values for logging).
     """
     metrics = {}
+
+    def weighted_action_loss(error: torch.Tensor) -> torch.Tensor:
+        weights = torch.ones_like(error)
+        if gripper_loss_weight != 1.0:
+            weights[..., (6, 13)] *= gripper_loss_weight
+        if late_chunk_loss_weight != 1.0 and late_chunk_start < error.shape[1]:
+            weights[:, late_chunk_start:, :] *= late_chunk_loss_weight
+        return (error * weights).sum() / weights.sum().clamp_min(1.0)
 
     input_ids = _move_to_cuda(batch["input_ids"], device_id)
     attention_mask = _move_to_cuda(batch["attention_mask"], device_id)
@@ -522,15 +585,14 @@ def run_forward_pass(
         if use_l1_regression:
             # Predict action
             predicted_actions = action_head(actions_hidden_states)
-            # Get full L1 loss
-            loss = torch.nn.L1Loss()(ground_truth_actions, predicted_actions)
+            loss = weighted_action_loss(torch.abs(ground_truth_actions - predicted_actions))
 
         if use_diffusion:
             # Predict noise
             noise_pred = action_head.module.predict_noise(actions_hidden_states)
             # Get diffusion noise prediction MSE loss
             noise_pred = noise_pred.reshape(noise.shape)
-            loss = nn.functional.mse_loss(noise_pred, noise, reduction="mean")
+            loss = weighted_action_loss(torch.square(noise_pred - noise))
 
             # Only sample actions and compute L1 losses if specified
             if compute_diffusion_l1:
@@ -783,6 +845,7 @@ def save_training_checkpoint(
         os.makedirs(checkpoint_dir, exist_ok=True)
         os.makedirs(adapter_dir, exist_ok=True)
         save_training_dataset_statistics(train_dataset.dataset_statistics, checkpoint_dir)
+        save_cobot_checkpoint_metadata(cfg, checkpoint_dir)
         print(f"Saving Model Checkpoint for Step {log_step}")
 
     # Wait for directories to be created
@@ -893,6 +956,9 @@ def run_validation(
                 compute_diffusion_l1=True,
                 num_diffusion_steps_train=cfg.num_diffusion_steps_train if cfg.use_diffusion else None,
                 freeze_vla=cfg.freeze_vla,
+                gripper_loss_weight=cfg.gripper_loss_weight,
+                late_chunk_start=cfg.late_chunk_start,
+                late_chunk_loss_weight=cfg.late_chunk_loss_weight,
             )
 
             # Add the loss value to the metrics
@@ -939,6 +1005,33 @@ def finetune(cfg: FinetuneConfig) -> None:
     assert not (cfg.use_l1_regression and cfg.use_diffusion), (
         "Cannot do both L1 regression and diffusion. Please pick one of them!"
     )
+    if cfg.dataset_name == "cobot_magic_sber":
+        expected_constants = ("COBOT_MAGIC", 14, 14, 24, NormalizationType.BOUNDS)
+        actual_constants = (
+            ROBOT_PLATFORM,
+            ACTION_DIM,
+            PROPRIO_DIM,
+            NUM_ACTIONS_CHUNK,
+            ACTION_PROPRIO_NORMALIZATION_TYPE,
+        )
+        if actual_constants != expected_constants:
+            raise ValueError(
+                f"Cobot Magic constants mismatch: expected {expected_constants}, got {actual_constants}. "
+                "Set ROBOT_PLATFORM=COBOT_MAGIC and COBOT_MAGIC_NUM_ACTIONS_CHUNK=24."
+            )
+        if cfg.dataset_format != "lerobot":
+            raise ValueError(
+                "cobot_magic_sber training must use --dataset_format lerobot; this path explicitly creates "
+                "24-step relative joint targets and matching relative-action statistics."
+            )
+    if not 0.0 <= cfg.proprio_dropout_prob <= 1.0:
+        raise ValueError("proprio_dropout_prob must be in [0, 1]")
+    if cfg.proprio_noise_std < 0:
+        raise ValueError("proprio_noise_std must be non-negative")
+    if cfg.gripper_loss_weight <= 0 or cfg.late_chunk_loss_weight <= 0:
+        raise ValueError("Loss weights must be positive")
+    if not 0 <= cfg.late_chunk_start <= NUM_ACTIONS_CHUNK:
+        raise ValueError(f"late_chunk_start must be in [0, {NUM_ACTIONS_CHUNK}]")
 
     # Trim trailing forward slash ('/') in VLA path if it exists
     cfg.vla_path = cfg.vla_path.rstrip("/")
@@ -954,6 +1047,11 @@ def finetune(cfg: FinetuneConfig) -> None:
     # GPU setup
     distributed_state = PartialState()
     device_id = distributed_state.local_process_index
+    process_seed = cfg.seed + distributed_state.process_index
+    random.seed(process_seed)
+    np.random.seed(process_seed)
+    torch.manual_seed(process_seed)
+    torch.cuda.manual_seed_all(process_seed)
     torch.cuda.set_device(device_id)
     torch.cuda.empty_cache()
 
@@ -1200,6 +1298,10 @@ def finetune(cfg: FinetuneConfig) -> None:
             prompt_builder_fn=PurePromptBuilder,
             use_wrist_image=use_wrist_image,
             use_proprio=cfg.use_proprio,
+            train=True,
+            image_aug=cfg.image_aug,
+            proprio_noise_std=cfg.proprio_noise_std,
+            proprio_dropout_prob=cfg.proprio_dropout_prob,
         )
         train_dataset = LeRobotDataset(
             cfg.data_root_dir,
@@ -1210,18 +1312,30 @@ def finetune(cfg: FinetuneConfig) -> None:
             episode_cache_size=cfg.lerobot_episode_cache_size,
             use_precomputed_stats=cfg.lerobot_use_precomputed_stats,
             sample_by_episode=cfg.lerobot_sample_by_episode,
+            seed=cfg.seed,
         )
         if cfg.use_val_set:
+            val_batch_transform = LeRobotBatchTransform(
+                action_tokenizer,
+                processor.tokenizer,
+                image_transform=processor.image_processor.apply_transform,
+                prompt_builder_fn=PurePromptBuilder,
+                use_wrist_image=use_wrist_image,
+                use_proprio=cfg.use_proprio,
+                train=False,
+                image_aug=False,
+            )
             val_dataset = LeRobotDataset(
                 cfg.data_root_dir,
                 cfg.dataset_name,
-                batch_transform,
+                val_batch_transform,
                 train=False,
                 num_images_in_input=cfg.num_images_in_input,
                 episode_cache_size=cfg.lerobot_episode_cache_size,
                 normalization_statistics=train_dataset.dataset_statistics,
                 use_precomputed_stats=cfg.lerobot_use_precomputed_stats,
                 sample_by_episode=True,
+                seed=cfg.seed,
             )
     else:
         raise ValueError(f"Unsupported dataset_format `{cfg.dataset_format}`. Choose from: rlds, lerobot.")
@@ -1229,6 +1343,7 @@ def finetune(cfg: FinetuneConfig) -> None:
     # [Important] Save dataset statistics so that we can unnormalize actions during inference
     if distributed_state.is_main_process:
         save_training_dataset_statistics(train_dataset.dataset_statistics, run_dir)
+        save_cobot_checkpoint_metadata(cfg, run_dir)
 
     # Create collator and dataloader
     collator = PaddedCollatorForActionPrediction(
@@ -1294,6 +1409,9 @@ def finetune(cfg: FinetuneConfig) -> None:
                 compute_diffusion_l1=compute_diffusion_l1,
                 num_diffusion_steps_train=cfg.num_diffusion_steps_train if cfg.use_diffusion else None,
                 freeze_vla=cfg.freeze_vla,
+                gripper_loss_weight=cfg.gripper_loss_weight,
+                late_chunk_start=cfg.late_chunk_start,
+                late_chunk_loss_weight=cfg.late_chunk_loss_weight,
             )
 
             # Normalize loss to account for gradient accumulation
@@ -1307,37 +1425,32 @@ def finetune(cfg: FinetuneConfig) -> None:
                 if metric_name in recent_metrics:
                     recent_metrics[metric_name].append(value)
 
-            # Compute gradient step index
-            gradient_step_idx = batch_idx // cfg.grad_accumulation_steps
+            # Log/save/validate only after a real optimizer step. Otherwise the first microbatch of the
+            # next accumulation cycle has the same gradient-step index and would repeat these operations.
+            if (batch_idx + 1) % cfg.grad_accumulation_steps != 0:
+                continue
 
-            # Compute smoothened train metrics
-            smoothened_metrics = compute_smoothened_metrics(recent_metrics)
-
-            # Push metrics every log_freq gradient steps
+            gradient_step_idx = (batch_idx + 1) // cfg.grad_accumulation_steps
             log_step = gradient_step_idx if not cfg.resume else cfg.resume_step + gradient_step_idx
-            if distributed_state.is_main_process and log_step % log_freq == 0:
-                log_metrics(smoothened_metrics, "VLA Train", log_step, experiment_logger)
 
-            # [If applicable] Linearly warm up learning rate from 10% to 100% of original
+            # [If applicable] Linearly warm up learning rate from 10% to 100% of original.
             if cfg.lr_warmup_steps > 0:
-                lr_progress = min((gradient_step_idx + 1) / cfg.lr_warmup_steps, 1.0)  # Cap at 1.0
+                lr_progress = min(gradient_step_idx / cfg.lr_warmup_steps, 1.0)
                 current_lr = original_lr * (0.1 + 0.9 * lr_progress)
                 for param_group in optimizer.param_groups:
                     param_group["lr"] = current_lr
 
-            if distributed_state.is_main_process and gradient_step_idx % log_freq == 0:
-                # Log the learning rate after any learning rate modifications (e.g., warmup/decay).
-                experiment_logger.log({"VLA Train/Learning Rate": scheduler.get_last_lr()[0]}, step=log_step)
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
+            progress.update()
 
-            # Optimizer and LR scheduler step
-            if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
-                optimizer.step()
-                scheduler.step()
-                optimizer.zero_grad()
-                progress.update()
+            smoothened_metrics = compute_smoothened_metrics(recent_metrics)
+            if distributed_state.is_main_process and log_step % log_freq == 0:
+                log_metrics(smoothened_metrics, "VLA Train", log_step, experiment_logger)
+                experiment_logger.log({"VLA Train/Learning Rate": optimizer.param_groups[0]["lr"]}, step=log_step)
 
-            # Save model checkpoint: either keep latest checkpoint only or all checkpoints
-            if gradient_step_idx > 0 and log_step % cfg.save_freq == 0:
+            if log_step % cfg.save_freq == 0:
                 save_training_checkpoint(
                     cfg=cfg,
                     run_dir=run_dir,
@@ -1351,8 +1464,7 @@ def finetune(cfg: FinetuneConfig) -> None:
                     distributed_state=distributed_state,
                 )
 
-            # Test model on validation set
-            if cfg.use_val_set and log_step > 0 and log_step % cfg.val_freq == 0:
+            if cfg.use_val_set and log_step % cfg.val_freq == 0:
                 run_validation(
                     vla=vla,
                     action_head=action_head,
@@ -1368,11 +1480,9 @@ def finetune(cfg: FinetuneConfig) -> None:
                     val_time_limit=cfg.val_time_limit,
                     experiment_logger=experiment_logger,
                 )
-                # Set model back to training mode after validation
-                vla.train()
+                vla.eval() if cfg.freeze_vla else vla.train()
 
-            # Stop training when max_steps is reached
-            if log_step == cfg.max_steps:
+            if log_step >= cfg.max_steps:
                 print(f"Max step {cfg.max_steps} reached! Stopping training...")
                 break
 

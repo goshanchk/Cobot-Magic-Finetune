@@ -290,10 +290,17 @@ def get_vla(cfg: Any) -> torch.nn.Module:
 
     checkpoint_path = Path(cfg.pretrained_checkpoint)
     adapter_path = checkpoint_path / "lora_adapter"
-    model_path = cfg.pretrained_checkpoint
-    if cfg.use_film and adapter_path.is_dir():
-        model_path = cfg.pretrained_checkpoint
-        print(f"Loading local OFT checkpoint from {model_path}; LoRA from {adapter_path}")
+    has_adapter = adapter_path.is_dir()
+    model_path = cfg.base_model_path if has_adapter else cfg.pretrained_checkpoint
+    if has_adapter:
+        if Path(model_path).exists() and Path(model_path).resolve() == checkpoint_path.resolve():
+            raise ValueError(
+                "base_model_path points to the fine-tuned checkpoint. Pass a clean OpenVLA base model to avoid "
+                "applying the LoRA adapter on top of merged LoRA weights."
+            )
+        print(f"Loading clean base OpenVLA from {model_path}; trained LoRA from {adapter_path}")
+    else:
+        print(f"No LoRA adapter directory found; loading model weights from {model_path}")
 
     # Load the model
     vla = AutoModelForVision2Seq.from_pretrained(
@@ -305,6 +312,9 @@ def get_vla(cfg: Any) -> torch.nn.Module:
         low_cpu_mem_usage=True,
         trust_remote_code=True,
     )
+
+    if has_adapter:
+        vla = _load_trained_lora(vla, cfg, adapter_path)
 
     # If using FiLM, wrap the vision backbone to allow for infusion of language inputs
     if cfg.use_film:
@@ -325,6 +335,26 @@ def get_vla(cfg: Any) -> torch.nn.Module:
     return vla
 
 
+def _load_trained_lora(vla: torch.nn.Module, cfg: Any, adapter_path: Path) -> torch.nn.Module:
+    from peft import PeftModel
+
+    adapter_config_path = adapter_path / "adapter_config.json"
+    if not adapter_config_path.is_file():
+        raise FileNotFoundError(f"Missing LoRA adapter config: {adapter_config_path}")
+    with adapter_config_path.open("r") as f:
+        adapter_config = json.load(f)
+    adapter_rank = int(adapter_config["r"])
+    if adapter_rank != cfg.lora_rank:
+        raise ValueError(f"Configured LoRA rank {cfg.lora_rank} does not match checkpoint rank {adapter_rank}")
+
+    llm_dim = int(vla.config.text_config.hidden_size)
+    peft_vla = PeftModel.from_pretrained(vla, adapter_path)
+    vla = peft_vla.get_base_model()
+    vla.llm_dim = llm_dim
+    print(f"Loaded trained LoRA adapter exactly once from {adapter_path} (rank={adapter_rank})")
+    return vla
+
+
 def _apply_film_to_vla(vla: torch.nn.Module, cfg: Any) -> torch.nn.Module:
     """
     Apply FiLM (Feature-wise Linear Modulation) to the VLA vision backbone.
@@ -336,8 +366,6 @@ def _apply_film_to_vla(vla: torch.nn.Module, cfg: Any) -> torch.nn.Module:
     Returns:
         torch.nn.Module: VLA model with FiLM applied
     """
-    from peft import PeftModel
-
     adapter_path = Path(cfg.pretrained_checkpoint) / "lora_adapter"
     if not adapter_path.is_dir():
         raise FileNotFoundError(
@@ -345,21 +373,7 @@ def _apply_film_to_vla(vla: torch.nn.Module, cfg: Any) -> torch.nn.Module:
             "refusing to initialize random LoRA weights for inference"
         )
 
-    with open(adapter_path / "adapter_config.json", "r") as f:
-        adapter_config = json.load(f)
-    adapter_rank = int(adapter_config["r"])
-    if adapter_rank != cfg.lora_rank:
-        raise ValueError(
-            f"Configured LoRA rank {cfg.lora_rank} does not match checkpoint rank {adapter_rank}"
-        )
-
     llm_dim = int(vla.config.text_config.hidden_size)
-    peft_vla = PeftModel.from_pretrained(vla, adapter_path)
-    print(f"Loaded trained LoRA adapter from {adapter_path} (rank={adapter_rank})")
-
-    # Work with the underlying OpenVLA model while keeping the loaded LoRA modules.
-    vla = peft_vla.get_base_model()
-    vla.llm_dim = llm_dim
 
     # Create and apply FiLMed vision backbone
     vla.vision_backbone = FiLMedPrismaticVisionBackbone(

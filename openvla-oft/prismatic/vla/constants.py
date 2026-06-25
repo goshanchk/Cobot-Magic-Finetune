@@ -46,8 +46,9 @@ COBOT_MAGIC_CONSTANTS = {
     # control consumes joints only.
     "ACTION_DIM": 14,
     "PROPRIO_DIM": 14,
-    # Relative joint deltas use bounds normalization; avoid quantile clipping.
-    "ACTION_PROPRIO_NORMALIZATION_TYPE": NormalizationType.BOUNDS_Q99,
+    # A relative action chunk can span most of the demonstrated joint range.
+    # Preserve valid endpoints instead of clipping the outer 1% of motions.
+    "ACTION_PROPRIO_NORMALIZATION_TYPE": NormalizationType.BOUNDS,
 }
 
 BRIDGE_CONSTANTS = {

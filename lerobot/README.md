@@ -126,15 +126,22 @@ tmux new -d -s smolvla_cobot_smoke \
    .venv/bin/python -m lerobot.scripts.lerobot_train \
    --policy.path=lerobot/smolvla_base \
    --policy.push_to_hub=false \
+   --seed=42 \
    --dataset.repo_id=cobot_magic_sber \
    --dataset.root=${DATASET_DIR} \
    --dataset.joint_only_dim=14 \
    --dataset.relative_joint_actions=true \
+   --policy.relative_joint_actions=true \
    --dataset.image_transforms.enable=true \
    --dataset.image_transforms.max_num_transforms=3 \
    --dataset.image_transforms.random_order=true \
    --policy.chunk_size=24 \
    --policy.n_action_steps=24 \
+   --policy.state_noise_std=0.05 \
+   --policy.state_dropout_prob=0.10 \
+   --policy.action_loss_gripper_weight=4.0 \
+   --policy.action_loss_late_chunk_start=10 \
+   --policy.action_loss_late_chunk_weight=2.0 \
    --rename_map='{\"observation.images.camera_0\":\"observation.images.camera1\",\"observation.images.camera_1\":\"observation.images.camera2\",\"observation.images.camera_2\":\"observation.images.camera3\"}' \
    --batch_size=2 \
    --steps=10 \
@@ -172,16 +179,23 @@ tmux new -d -s smolvla_cobot_full_state14_50k \
    -m lerobot.scripts.lerobot_train \
    --policy.path=lerobot/smolvla_base \
    --policy.push_to_hub=false \
+   --seed=42 \
    --dataset.repo_id=cobot_magic_sber \
    --dataset.root=${DATASET_DIR} \
    --dataset.joint_only_dim=14 \
    --dataset.relative_joint_actions=true \
+   --policy.relative_joint_actions=true \
    --dataset.image_transforms.enable=true \
    --dataset.image_transforms.max_num_transforms=3 \
    --dataset.image_transforms.random_order=true \
    --policy.chunk_size=24 \
    --policy.n_action_steps=24 \
-   --rename_map='{"observation.images.camera_0":"observation.images.camera1","observation.images.camera_1":"observation.images.camera2","observation.images.camera_2":"observation.images.camera3"}' \
+   --policy.state_noise_std=0.05 \
+   --policy.state_dropout_prob=0.10 \
+   --policy.action_loss_gripper_weight=4.0 \
+   --policy.action_loss_late_chunk_start=10 \
+   --policy.action_loss_late_chunk_weight=2.0 \
+   --rename_map='{\"observation.images.camera_0\":\"observation.images.camera1\",\"observation.images.camera_1\":\"observation.images.camera2\",\"observation.images.camera_2\":\"observation.images.camera3\"}' \
    --batch_size=8 \
    --steps=50000 \
    --save_freq=5000 \
@@ -207,101 +221,26 @@ Watch:
 tail -f logs_smolvla/stdout/cobot_magic_smolvla_2gpu_full_unfrozen_state14_50k.log
 ```
 
-## Optional Left-Arm Weighted Training
-
-The default run above uses uniform action loss. For a careful comparison run, use a small extra weight on the left arm dimensions only:
-
-```text
-left arm dims: 0..6
-right arm dims: 7..13
-left arm weight: 1.25
-```
-
-```bash
-cd /path/to/lerobot
-export DATASET_DIR=/path/to/cobot_magic_sber_v3_0
-mkdir -p logs_smolvla/stdout logs_smolvla/outputs
-
-tmux new -d -s smolvla_cobot_full_state14_left125_50k \
-  "cd $PWD && \
-   unset HTTPS_PROXY HTTP_PROXY ALL_PROXY https_proxy http_proxy all_proxy && \
-   CUDA_VISIBLE_DEVICES=0,1 \
-   .venv/bin/torchrun --standalone --nnodes 1 --nproc-per-node 2 \
-   -m lerobot.scripts.lerobot_train \
-   --policy.path=lerobot/smolvla_base \
-   --policy.push_to_hub=false \
-   --dataset.repo_id=cobot_magic_sber \
-   --dataset.root=${DATASET_DIR} \
-   --dataset.joint_only_dim=14 \
-   --dataset.relative_joint_actions=true \
-   --dataset.image_transforms.enable=true \
-   --dataset.image_transforms.max_num_transforms=3 \
-   --dataset.image_transforms.random_order=true \
-   --policy.chunk_size=24 \
-   --policy.n_action_steps=24 \
-   --policy.action_loss_left_arm_weight=1.25 \
-   --rename_map='{"observation.images.camera_0":"observation.images.camera1","observation.images.camera_1":"observation.images.camera2","observation.images.camera_2":"observation.images.camera3"}' \
-   --batch_size=8 \
-   --steps=50000 \
-   --save_freq=5000 \
-   --log_freq=100 \
-   --num_workers=4 \
-   --prefetch_factor=2 \
-   --output_dir=logs_smolvla/outputs/cobot_magic_smolvla_2gpu_full_unfrozen_state14_left125_50k \
-   --job_name=cobot_magic_smolvla_2gpu_full_unfrozen_state14_left125_50k \
-   --policy.device=cuda \
-   --policy.freeze_vision_encoder=false \
-   --policy.train_expert_only=false \
-   --policy.load_vlm_weights=true \
-   --policy.optimizer_lr=5e-5 \
-   --policy.scheduler_warmup_steps=1000 \
-   --policy.scheduler_decay_steps=50000 \
-   --wandb.enable=false \
-   2>&1 | tee logs_smolvla/stdout/cobot_magic_smolvla_2gpu_full_unfrozen_state14_left125_50k.log"
-```
-
-Watch:
-
-```bash
-tail -f logs_smolvla/stdout/cobot_magic_smolvla_2gpu_full_unfrozen_state14_left125_50k.log
-```
-
 ## Inference: ZeroMQ Server
 
-The robot client uses a ZeroMQ `REQ` socket and expects a server-side `REP` socket. The SmolVLA adapter listens on `0.0.0.0:5055`, receives 3 JPEG-base64 cameras plus a 14D joint proprio vector, predicts relative joint deltas, and returns absolute joint actions with shape `[num_actions, 14]`.
-
-Run the equal-weight checkpoint from the LeRobot repo root:
+The robot client uses a ZeroMQ `REQ` socket and expects a server-side `REP` socket. The server receives three JPEG-base64 cameras plus a 14D joint proprio vector and always returns absolute joint targets with shape `[num_actions, 14]`.
 
 ```bash
 cd /path/to/lerobot
+unset HTTPS_PROXY HTTP_PROXY ALL_PROXY https_proxy http_proxy all_proxy
 
 CUDA_VISIBLE_DEVICES=0 \
 .venv/bin/python src/lerobot/scripts/inference/cobot_smolvla_zmq.py \
-  --checkpoint_path logs_smolvla/outputs/cobot_magic_smolvla_2gpu_full_unfrozen_state14_relative_chunk24_50k/checkpoints/050000 \
+  --checkpoint_path logs_smolvla/outputs/cobot_magic_smolvla_2gpu_full_unfrozen_state14_50k/checkpoints/050000 \
   --device cuda:0 \
   --host 0.0.0.0 \
   --port 5055 \
   --max_actions 1
 ```
-
-Run the checkpoint trained with `1.25` loss weight for the left arm:
-
-```bash
-cd /path/to/lerobot
-
-CUDA_VISIBLE_DEVICES=0 \
-.venv/bin/python src/lerobot/scripts/inference/cobot_smolvla_zmq.py \
-  --checkpoint_path logs_smolvla/outputs/cobot_magic_smolvla_2gpu_full_unfrozen_state14_left125_faststats_50k/checkpoints/050000 \
-  --device cuda:0 \
-  --host 0.0.0.0 \
-  --port 5055 \
-  --max_actions 1
-```
-
 ## Tmux
 
 ```bash
 tmux ls
-tmux attach -t smolvla_cobot_2gpu_50k
+tmux attach -t smolvla_cobot_full_state14_50k
 # detach without stopping: Ctrl-b, then d
 ```

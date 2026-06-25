@@ -114,9 +114,11 @@ Quick environment check:
 micromamba run -n finetune_env python - <<'PY'
 import torch
 import tensorboard
+import zmq
 import prismatic
 print('torch', torch.__version__)
 print('tensorboard', tensorboard.__version__)
+print('pyzmq', zmq.__version__)
 print('openvla-oft import ok')
 PY
 ```
@@ -126,6 +128,8 @@ PY
 ```bash
 tmux new -d -s openvla_frozen_smoke \
   "cd ${REPO_ROOT} && \
+   ROBOT_PLATFORM=COBOT_MAGIC \
+   COBOT_MAGIC_NUM_ACTIONS_CHUNK=24 \
    CUDA_VISIBLE_DEVICES=0,1 \
    micromamba run -n finetune_env torchrun \
    --standalone --nnodes 1 --nproc-per-node 2 \
@@ -171,8 +175,9 @@ tail -f ${REPO_ROOT}/logs/stdout/openvla_frozen_smoke.log
 ```bash
 tmux new -d -s openvla_unfrozen_smoke \
   "cd ${REPO_ROOT} && \
+   ROBOT_PLATFORM=COBOT_MAGIC \
    CUDA_VISIBLE_DEVICES=0,1 \
-   COBOT_MAGIC_NUM_ACTIONS_CHUNK=1 \
+   COBOT_MAGIC_NUM_ACTIONS_CHUNK=24 \
    micromamba run -n finetune_env torchrun \
    --standalone --nnodes 1 --nproc-per-node 2 \
    vla-scripts/finetune.py \
@@ -202,7 +207,7 @@ tmux new -d -s openvla_unfrozen_smoke \
    --logger none \
    --log_freq 1 \
    --shuffle_buffer_size 256 \
-   --run_id_note unfrozen-smoke--1cam--chunk1--lora8--h512 \
+   --run_id_note unfrozen-smoke--1cam--chunk24--lora8--h512 \
    2>&1 | tee logs/stdout/openvla_unfrozen_smoke.log"
 ```
 
@@ -212,10 +217,10 @@ Watch:
 tail -f ${REPO_ROOT}/logs/stdout/openvla_unfrozen_smoke.log
 ```
 
-## Full Training: Relative Joint Actions
+## Full Training: Relative Joint Actions + Diffusion
 
 ```bash
-tmux new -d -s openvla_relative_lora32_20k \
+tmux new -d -s openvla_relative_diffusion_lora32_20k \
   "cd ${REPO_ROOT} && \
    ROBOT_PLATFORM=COBOT_MAGIC \
    COBOT_MAGIC_NUM_ACTIONS_CHUNK=24 \
@@ -233,8 +238,9 @@ tmux new -d -s openvla_relative_lora32_20k \
    --run_root_dir ${REPO_ROOT}/logs/runs \
    --distributed_backend ddp \
    --freeze_vla False \
-   --use_l1_regression True \
-   --use_diffusion False \
+   --use_l1_regression False \
+   --use_diffusion True \
+   --num_diffusion_steps_train 50 \
    --use_film True \
    --num_images_in_input 3 \
    --use_proprio True \
@@ -248,11 +254,15 @@ tmux new -d -s openvla_relative_lora32_20k \
    --val_freq 1000 \
    --val_time_limit 120 \
    --save_freq 2000 \
-   --merge_lora_during_training True \
+   --merge_lora_during_training False \
    --image_aug True \
+   --proprio_noise_std 0.02 \
+   --proprio_dropout_prob 0.10 \
+   --gripper_loss_weight 4.0 \
+   --late_chunk_start 10 \
+   --late_chunk_loss_weight 2.0 \
+   --seed 42 \
    --lora_rank 32 \
-   --action_head_hidden_dim 2048 \
-   --action_head_num_blocks 1 \
    --logger tensorboard \
    --log_freq 10 \
    --shuffle_buffer_size 100000 \
@@ -262,8 +272,8 @@ tmux new -d -s openvla_relative_lora32_20k \
    --lerobot_episode_cache_size 6 \
    --lerobot_use_precomputed_stats True \
    --lerobot_sample_by_episode True \
-   --run_id_note relative--ddp4--bs2x4xacc2--3cam--film--chunk24--joints14--lora32--lr2e-4--20k--h2048 \
-   2>&1 | tee logs/stdout/openvla_relative_lora32_20k.log"
+   --run_id_override cm_rel_diff_20k \
+   2>&1 | tee logs/stdout/openvla_relative_diffusion_lora32_20k.log"
 ```
 
 ## Logs
@@ -271,7 +281,7 @@ tmux new -d -s openvla_relative_lora32_20k \
 Stdout:
 
 ```bash
-tail -f ${REPO_ROOT}/logs/stdout/openvla_relative_lora32_20k.log
+tail -f ${REPO_ROOT}/logs/stdout/openvla_relative_diffusion_lora32_20k.log
 ```
 
 TensorBoard:
@@ -290,7 +300,7 @@ Tmux:
 
 ```bash
 tmux ls
-tmux attach -t openvla_relative_lora32_20k
+tmux attach -t openvla_relative_diffusion_lora32_20k
 # detach without stopping: Ctrl-b, then d
 ```
 
@@ -304,12 +314,18 @@ Expected checkpoint layout:
 /path/to/openvla_20000_chkpt/
   lora_adapter/
   action_head--20000_checkpoint.pt
+  noisy_action_projector--20000_checkpoint.pt
   proprio_projector--20000_checkpoint.pt
   vision_backbone--20000_checkpoint.pt
   dataset_statistics.json
-  config.json
-  model-*.safetensors
+  cobot_checkpoint_metadata.json
 ```
+
+For new checkpoints, `cobot_checkpoint_metadata.json` stores the exact normalization key, normalization type, action/state representation, and a SHA-256 fingerprint of `dataset_statistics.json`. The server refuses to start if the statistics file, `--unnorm_key`, dimensions, or normalization semantics do not match training.
+
+Training normalizes relative 24-step action chunks and absolute 14D proprio with Cobot Magic `bounds` statistics. Inference loads that same checkpoint-local file, applies the same bounds formula to proprio, and uses the inverse formula for actions before adding current proprio exactly once.
+
+Legacy checkpoints without this metadata are intentionally rejected by the strict server. Do not copy statistics from another run to make them load; retrain or verify and migrate the checkpoint explicitly.
 
 For a checkpoint trained by the relative-action command above:
 
@@ -324,18 +340,16 @@ micromamba run -n finetune_env python vla-scripts/cobot_openvlaoft_zmq.py \
   --pretrained_checkpoint "${OPENVLA_CHECKPOINT}" \
   --base_model_path openvla/openvla-7b \
   --unnorm_key cobot_magic_sber \
-  --use_l1_regression True \
-  --use_diffusion False \
+  --use_l1_regression False \
+  --use_diffusion True \
+  --num_diffusion_steps_train 50 \
+  --num_diffusion_steps_inference 20 \
   --use_film True \
   --num_images_in_input 3 \
   --use_proprio True \
   --lora_rank 32 \
-  --action_head_hidden_dim 2048 \
-  --action_head_num_blocks 1 \
   --use_relative_actions True \
-  --max_arm_target_delta 0.75 \
-  --max_gripper_target_delta 3.0 \
+  --seed 42 \
   --host 0.0.0.0 \
   --port 5055
 ```
-

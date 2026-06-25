@@ -63,8 +63,22 @@ class SmolVLAConfig(PreTrainedConfig):
     num_steps: int = 10
 
     # Optional action loss weighting. Defaults keep the upstream uniform MSE loss.
+    # The left-arm fields are retained only for loading legacy Cobot Magic checkpoints.
     action_loss_left_arm_indices: tuple[int, ...] = (0, 1, 2, 3, 4, 5, 6)
     action_loss_left_arm_weight: float = 1.0
+    action_loss_gripper_indices: tuple[int, ...] = (6, 13)
+    action_loss_gripper_weight: float = 1.0
+    action_loss_late_chunk_start: int | None = None
+    action_loss_late_chunk_weight: float = 1.0
+
+    # Training-only augmentation applied after state normalization.
+    state_noise_std: float = 0.0
+    state_dropout_prob: float = 0.0
+
+    # Saved with Cobot Magic checkpoints to distinguish relative from absolute outputs.
+    relative_joint_actions: bool | None = None
+    normalization_statistics_sha256: str | None = None
+    normalization_statistics_representation: str | None = None
 
     # Attention utils
     use_cache: bool = True
@@ -123,6 +137,23 @@ class SmolVLAConfig(PreTrainedConfig):
             raise NotImplementedError(
                 "`use_delta_joint_actions_aloha` is used by smolvla for aloha real models. It is not ported yet in LeRobot."
             )
+        if self.action_loss_left_arm_weight <= 0:
+            raise ValueError("action_loss_left_arm_weight must be positive")
+        if self.action_loss_gripper_weight <= 0:
+            raise ValueError("action_loss_gripper_weight must be positive")
+        if self.action_loss_late_chunk_weight <= 0:
+            raise ValueError("action_loss_late_chunk_weight must be positive")
+        if self.action_loss_late_chunk_start is not None and not (
+            0 <= self.action_loss_late_chunk_start < self.chunk_size
+        ):
+            raise ValueError(
+                "action_loss_late_chunk_start must be in [0, chunk_size), "
+                f"got {self.action_loss_late_chunk_start} for chunk_size={self.chunk_size}"
+            )
+        if self.state_noise_std < 0:
+            raise ValueError("state_noise_std must be non-negative")
+        if not 0 <= self.state_dropout_prob <= 1:
+            raise ValueError("state_dropout_prob must be in [0, 1]")
 
     def validate_features(self) -> None:
         for i in range(self.empty_cameras):

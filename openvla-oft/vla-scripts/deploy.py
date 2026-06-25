@@ -27,11 +27,12 @@ from PIL import Image
 from transformers import AutoModelForVision2Seq, AutoProcessor
 
 from experiments.robot.openvla_utils import (
-    get_vla,
-    get_vla_action,
     get_action_head,
+    get_noisy_action_projector,
     get_processor,
     get_proprio_projector,
+    get_vla,
+    get_vla_action,
 )
 from experiments.robot.robot_utils import (
     get_image_resize_size,
@@ -61,8 +62,11 @@ class OpenVLAServer:
 
         # Load continuous action head
         self.action_head = None
+        self.noisy_action_projector = None
         if cfg.use_l1_regression or cfg.use_diffusion:
             self.action_head = get_action_head(cfg, self.vla.llm_dim)
+        if cfg.use_diffusion:
+            self.noisy_action_projector = get_noisy_action_projector(cfg, self.vla.llm_dim)
 
         # Check that the model contains the action un-normalization key
         assert cfg.unnorm_key in self.vla.norm_stats, f"Action un-norm key {cfg.unnorm_key} not found in VLA `norm_stats`!"
@@ -86,7 +90,15 @@ class OpenVLAServer:
             instruction = observation["instruction"]
 
             action = get_vla_action(
-                self.cfg, self.vla, self.processor, observation, instruction, action_head=self.action_head, proprio_projector=self.proprio_projector, use_film=self.cfg.use_film,
+                self.cfg,
+                self.vla,
+                self.processor,
+                observation,
+                instruction,
+                action_head=self.action_head,
+                proprio_projector=self.proprio_projector,
+                noisy_action_projector=self.noisy_action_projector,
+                use_film=self.cfg.use_film,
             )
 
             if double_encode:
@@ -120,6 +132,7 @@ class DeployConfig:
     #################################################################################################################
     model_family: str = "openvla"                    # Model family
     pretrained_checkpoint: Union[str, Path] = ""     # Pretrained checkpoint path
+    base_model_path: Union[str, Path] = "openvla/openvla-7b"  # Clean base model for LoRA checkpoints
 
     use_l1_regression: bool = True                   # If True, uses continuous action head with L1 regression objective
     use_diffusion: bool = False                      # If True, uses continuous action head with diffusion modeling objective (DDIM)
@@ -142,7 +155,7 @@ class DeployConfig:
     #################################################################################################################
     # Utils
     #################################################################################################################
-    seed: int = 7                                    # Random Seed (for reproducibility)
+    seed: int = 42                                   # Random Seed (for reproducibility)
     # fmt: on
 
 

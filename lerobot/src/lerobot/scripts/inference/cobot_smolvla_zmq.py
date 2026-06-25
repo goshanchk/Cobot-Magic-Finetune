@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -21,6 +22,7 @@ from typing import Any
 
 import numpy as np
 from PIL import Image
+from safetensors.torch import load_file
 import torch
 import zmq
 
@@ -114,9 +116,135 @@ class CobotSmolVLAZMQServer:
         self.image_feature_keys = list(self.policy.config.image_features.keys())
         if not self.image_feature_keys:
             raise ValueError("Loaded SmolVLA checkpoint has no image features in config")
+        checkpoint_relative_actions = getattr(self.policy.config, "relative_joint_actions", None)
+        if args.relative_actions is None:
+            if checkpoint_relative_actions is None:
+                raise ValueError(
+                    "Checkpoint does not record whether actions are relative or absolute. "
+                    "Pass exactly one of --relative_actions or --absolute_actions after verifying its training config."
+                )
+            self.relative_actions = checkpoint_relative_actions
+        else:
+            self.relative_actions = args.relative_actions
+            if (
+                checkpoint_relative_actions is not None
+                and checkpoint_relative_actions != self.relative_actions
+            ):
+                raise ValueError(
+                    "CLI action mode disagrees with checkpoint config: "
+                    f"checkpoint relative_joint_actions={checkpoint_relative_actions}, "
+                    f"CLI relative_actions={self.relative_actions}."
+                )
         print(f"Loaded SmolVLA checkpoint: {self.model_dir}")
         print(f"Image features: {self.image_feature_keys}")
         print(f"Action feature: {self.policy.config.action_feature}")
+        print(f"Action output mode: {'relative deltas' if self.relative_actions else 'absolute targets'}")
+        self._validate_processor_statistics()
+
+    def _validate_processor_statistics(self) -> None:
+        pre_config_path = self.model_dir / "policy_preprocessor.json"
+        post_config_path = self.model_dir / "policy_postprocessor.json"
+        if not pre_config_path.is_file() or not post_config_path.is_file():
+            raise FileNotFoundError("Checkpoint is missing saved normalization processor configs")
+
+        with pre_config_path.open("r") as f:
+            pre_config = json.load(f)
+        with post_config_path.open("r") as f:
+            post_config = json.load(f)
+
+        def find_step(config: dict[str, Any], registry_name: str) -> dict[str, Any]:
+            matches = [step for step in config.get("steps", []) if step.get("registry_name") == registry_name]
+            if len(matches) != 1:
+                raise ValueError(
+                    f"Expected exactly one {registry_name!r} step in saved processor, found {len(matches)}"
+                )
+            return matches[0]
+
+        pre_step = find_step(pre_config, "normalizer_processor")
+        post_step = find_step(post_config, "unnormalizer_processor")
+        pre_norm_map = pre_step["config"].get("norm_map", {})
+        post_norm_map = post_step["config"].get("norm_map", {})
+        if pre_norm_map.get("ACTION") != post_norm_map.get("ACTION"):
+            raise ValueError(
+                "Training normalizer and inference unnormalizer use different ACTION normalization modes"
+            )
+
+        policy_norm_map = self.policy.config.normalization_mapping
+        for feature_type in ("STATE", "ACTION"):
+            policy_mode = policy_norm_map.get(feature_type)
+            policy_mode = getattr(policy_mode, "value", policy_mode)
+            processor_mode = pre_norm_map.get(feature_type)
+            if policy_mode != processor_mode:
+                raise ValueError(
+                    f"Policy config {feature_type} normalization {policy_mode!r} does not match "
+                    f"saved processor mode {processor_mode!r}"
+                )
+
+        pre_state_path = self.model_dir / pre_step["state_file"]
+        post_state_path = self.model_dir / post_step["state_file"]
+        if not pre_state_path.is_file() or not post_state_path.is_file():
+            raise FileNotFoundError("Checkpoint is missing saved normalization tensors")
+        pre_state = load_file(pre_state_path)
+        post_state = load_file(post_state_path)
+
+        for key in ("action.mean", "action.std", "action.min", "action.max"):
+            if key not in pre_state or key not in post_state:
+                raise KeyError(f"Checkpoint normalization tensors are missing {key!r}")
+            if not torch.equal(pre_state[key], post_state[key]):
+                raise ValueError(f"Training and inference action statistics differ for {key}")
+            if pre_state[key].shape != (14,) or not torch.isfinite(pre_state[key]).all():
+                raise ValueError(f"Invalid saved action statistic {key}: shape={tuple(pre_state[key].shape)}")
+
+        for key in (
+            "observation.state.mean",
+            "observation.state.std",
+            "observation.state.min",
+            "observation.state.max",
+        ):
+            if key not in pre_state:
+                raise KeyError(f"Checkpoint normalization tensors are missing {key!r}")
+            if pre_state[key].shape != (14,) or not torch.isfinite(pre_state[key]).all():
+                raise ValueError(f"Invalid saved state statistic {key}: shape={tuple(pre_state[key].shape)}")
+        digest = hashlib.sha256()
+        for feature in ("action", "observation.state"):
+            for stat_name in ("mean", "std", "min", "max"):
+                key = f"{feature}.{stat_name}"
+                if key not in pre_state:
+                    raise KeyError(f"Checkpoint normalization tensors are missing {key!r}")
+                values = pre_state[key].to(dtype=torch.float32).contiguous().cpu()
+                digest.update(f"{key}\0".encode())
+                digest.update(values.numpy().tobytes())
+        actual_hash = digest.hexdigest()
+        expected_hash = getattr(self.policy.config, "normalization_statistics_sha256", None)
+        expected_representation = getattr(
+            self.policy.config, "normalization_statistics_representation", None
+        )
+        required_representation = (
+            "relative_chunk_action_and_absolute_state"
+            if self.relative_actions
+            else "absolute_action_and_absolute_state"
+        )
+        if expected_representation != required_representation:
+            if not self.args.allow_unverified_normalization:
+                raise ValueError(
+                    "Checkpoint normalization representation is missing or inconsistent: "
+                    f"expected {required_representation!r}, got {expected_representation!r}"
+                )
+            logging.warning("Allowing unverified normalization representation for legacy checkpoint")
+        if expected_hash is None:
+            if not self.args.allow_unverified_normalization:
+                raise ValueError(
+                    "Checkpoint has no normalization statistics fingerprint; use a new checkpoint or pass "
+                    "--allow_unverified_normalization only after manual verification"
+                )
+            logging.warning("Allowing legacy checkpoint without normalization statistics fingerprint")
+        elif actual_hash != expected_hash:
+            raise ValueError(
+                f"Saved processor statistics fingerprint {actual_hash} does not match model config {expected_hash}"
+            )
+
+        if torch.any(pre_state["action.std"] <= 0) or torch.any(pre_state["observation.state.std"] <= 0):
+            raise ValueError("Checkpoint normalization contains non-positive standard deviations")
 
     def _request_to_batch(self, request: dict[str, Any]) -> tuple[dict[str, Any], np.ndarray]:
         if request.get("type") != "inference":
@@ -130,6 +258,8 @@ class CobotSmolVLAZMQServer:
             proprio = proprio[None, :]
         if proprio.ndim != 2 or proprio.shape[1] != 14:
             raise ValueError(f"Expected proprio shape [T, 14], got {proprio.shape}")
+        if not np.isfinite(proprio).all():
+            raise ValueError("Proprio contains NaN or Inf values")
 
         batch: dict[str, Any] = {
             OBS_STATE: torch.from_numpy(proprio[-1].copy()).to(torch.float32),
@@ -146,8 +276,10 @@ class CobotSmolVLAZMQServer:
             actions = self.policy.predict_action_chunk(batch)
             actions = self.postprocessor(actions)
         actions = _as_actions_array(actions)
-        if self.args.relative_actions:
+        if self.relative_actions:
             actions = proprio[-1][None, :] + actions
+        if not np.isfinite(actions).all():
+            raise ValueError("Model actions contain NaN or Inf values")
         if self.args.max_actions > 0:
             actions = actions[: self.args.max_actions]
         return {"actions": actions.astype(float).tolist()}
@@ -184,14 +316,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5055)
     parser.add_argument("--max_actions", type=int, default=0, help="If >0, truncate returned action chunk to this many actions.")
-    parser.add_argument("--absolute_actions", action="store_true", help="Use only for old checkpoints that already output absolute joint targets.")
+    action_mode = parser.add_mutually_exclusive_group()
+    action_mode.add_argument(
+        "--relative_actions",
+        action="store_true",
+        dest="relative_actions",
+        help="Predictions are relative joint deltas; add current proprio once.",
+    )
+    action_mode.add_argument(
+        "--absolute_actions",
+        action="store_false",
+        dest="relative_actions",
+        help="Predictions are already absolute joint targets.",
+    )
+    parser.add_argument(
+        "--allow_unverified_normalization",
+        action="store_true",
+        help="Allow legacy checkpoints without a saved normalization fingerprint after manual verification.",
+    )
     parser.add_argument("--local_files_only", action="store_true", help="Do not download missing files from HuggingFace Hub.")
     parser.add_argument("--strict", action="store_true", help="Use strict safetensors loading.")
     parser.add_argument("--recv_timeout_ms", type=int, default=10000)
     parser.add_argument("--send_timeout_ms", type=int, default=10000)
-    args = parser.parse_args()
-    args.relative_actions = not args.absolute_actions
-    return args
+    parser.set_defaults(relative_actions=None)
+    return parser.parse_args()
 
 
 def main() -> None:

@@ -7,6 +7,7 @@ Protocol:
 """
 
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -17,17 +18,24 @@ from typing import Any, Union
 
 import draccus
 import numpy as np
+import torch
 import zmq
 from PIL import Image
 
 from experiments.robot.openvla_utils import (
     get_action_head,
+    get_noisy_action_projector,
     get_processor,
     get_proprio_projector,
     get_vla,
     get_vla_action,
 )
-from prismatic.vla.constants import ACTION_DIM, PROPRIO_DIM
+from prismatic.vla.constants import (
+    ACTION_DIM,
+    ACTION_PROPRIO_NORMALIZATION_TYPE,
+    NUM_ACTIONS_CHUNK,
+    PROPRIO_DIM,
+)
 
 
 def decode_jpeg_b64(value: str) -> np.ndarray:
@@ -56,7 +64,13 @@ def _as_actions_array(actions: Any) -> np.ndarray:
 class CobotOpenVLAOFTZMQServer:
     def __init__(self, cfg: "OpenVLAOFTZMQConfig") -> None:
         self.cfg = cfg
+        np.random.seed(cfg.seed)
+        torch.manual_seed(cfg.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(cfg.seed)
+        self._validate_checkpoint_metadata()
         self.vla = get_vla(cfg)
+        self._validate_loaded_statistics()
         self.processor = get_processor(cfg)
 
         self.proprio_projector = None
@@ -64,8 +78,11 @@ class CobotOpenVLAOFTZMQServer:
             self.proprio_projector = get_proprio_projector(cfg, self.vla.llm_dim, PROPRIO_DIM)
 
         self.action_head = None
+        self.noisy_action_projector = None
         if cfg.use_l1_regression or cfg.use_diffusion:
             self.action_head = get_action_head(cfg, self.vla.llm_dim)
+        if cfg.use_diffusion:
+            self.noisy_action_projector = get_noisy_action_projector(cfg, self.vla.llm_dim)
 
         if cfg.unnorm_key:
             assert cfg.unnorm_key in self.vla.norm_stats, (
@@ -78,6 +95,90 @@ class CobotOpenVLAOFTZMQServer:
                 raise ValueError("Checkpoint statistics do not match the configured Cobot Magic dimensions")
             print(f"Action mode: {'relative -> absolute' if cfg.use_relative_actions else 'absolute'}")
             print(f"Normalization key: {cfg.unnorm_key}; action/proprio dims: {ACTION_DIM}/{PROPRIO_DIM}")
+            if cfg.use_relative_actions:
+                action_mean = np.asarray(action_stats["mean"], dtype=np.float32)
+                proprio_mean = np.asarray(proprio_stats["mean"], dtype=np.float32)
+                if np.allclose(action_mean, proprio_mean, atol=0.05, rtol=0.05):
+                    raise ValueError(
+                        "Checkpoint claims relative inference, but action statistics look like absolute joint "
+                        "positions (action mean nearly equals proprio mean). Refusing unsafe double addition."
+                    )
+
+    def _validate_checkpoint_metadata(self) -> None:
+        metadata_path = Path(self.cfg.pretrained_checkpoint) / "cobot_checkpoint_metadata.json"
+        if not metadata_path.is_file():
+            message = (
+                "Checkpoint has no cobot_checkpoint_metadata.json; action mode and architecture cannot be verified"
+            )
+            if self.cfg.require_checkpoint_metadata:
+                raise FileNotFoundError(message)
+            logging.warning(message)
+            return
+        with metadata_path.open("r") as f:
+            metadata = json.load(f)
+        expected = {
+            "action_mode": "relative" if self.cfg.use_relative_actions else "absolute",
+            "action_dim": ACTION_DIM,
+            "proprio_dim": PROPRIO_DIM,
+            "action_chunk_length": NUM_ACTIONS_CHUNK,
+            "normalization_type": ACTION_PROPRIO_NORMALIZATION_TYPE.value,
+            "normalization_key": str(self.cfg.unnorm_key),
+            "action_statistics_representation": "chunk_relative_to_current_state",
+            "proprio_statistics_representation": "absolute_joint_state",
+            "use_l1_regression": self.cfg.use_l1_regression,
+            "use_diffusion": self.cfg.use_diffusion,
+            "use_film": self.cfg.use_film,
+            "use_proprio": self.cfg.use_proprio,
+            "num_images_in_input": self.cfg.num_images_in_input,
+            "lora_rank": self.cfg.lora_rank,
+            "num_diffusion_steps_train": self.cfg.num_diffusion_steps_train,
+        }
+        mismatches = {
+            key: (metadata.get(key), value)
+            for key, value in expected.items()
+            if metadata.get(key) != value
+        }
+        statistics_path = Path(self.cfg.pretrained_checkpoint) / "dataset_statistics.json"
+        expected_hash = metadata.get("dataset_statistics_sha256")
+        if expected_hash is None:
+            mismatches["dataset_statistics_sha256"] = (None, "required")
+        elif not statistics_path.is_file():
+            mismatches["dataset_statistics.json"] = ("missing", str(statistics_path))
+        else:
+            digest = hashlib.sha256(statistics_path.read_bytes()).hexdigest()
+            if digest != expected_hash:
+                mismatches["dataset_statistics_sha256"] = (digest, expected_hash)
+        if mismatches:
+            raise ValueError(f"Inference config does not match checkpoint metadata: {mismatches}")
+
+    def _validate_loaded_statistics(self) -> None:
+        if not self.cfg.unnorm_key:
+            raise ValueError("unnorm_key is required for Cobot Magic continuous-action inference")
+        if self.cfg.unnorm_key not in self.vla.norm_stats:
+            raise KeyError(
+                f"Normalization key {self.cfg.unnorm_key!r} is absent from checkpoint statistics"
+            )
+
+        dataset_stats = self.vla.norm_stats[self.cfg.unnorm_key]
+        expected_dims = {"action": ACTION_DIM, "proprio": PROPRIO_DIM}
+        for field, dim in expected_dims.items():
+            stats = dataset_stats.get(field)
+            if not isinstance(stats, dict):
+                raise ValueError(f"Checkpoint statistics are missing {field!r}")
+            required_keys = ("mean", "std", "min", "max")
+            for key in required_keys:
+                values = np.asarray(stats.get(key), dtype=np.float32)
+                if values.shape != (dim,):
+                    raise ValueError(
+                        f"Checkpoint {field}.{key} shape {values.shape} does not match {(dim,)}"
+                    )
+                if not np.isfinite(values).all():
+                    raise ValueError(f"Checkpoint {field}.{key} contains NaN or Inf")
+            low = np.asarray(stats["min"], dtype=np.float32)
+            high = np.asarray(stats["max"], dtype=np.float32)
+            if np.any(high <= low):
+                bad = np.flatnonzero(high <= low).tolist()
+                raise ValueError(f"Checkpoint {field} normalization has non-positive spans at {bad}")
 
     def _warn_proprio_ood(self, proprio: np.ndarray) -> None:
         if not self.cfg.unnorm_key:
@@ -93,27 +194,11 @@ class CobotOpenVLAOFTZMQServer:
                 outside.tolist(), proprio[outside].tolist(), low[outside].tolist(), high[outside].tolist(),
             )
 
-    # def _validate_targets(self, actions: np.ndarray, proprio: np.ndarray) -> None:
-    #     if not np.isfinite(proprio).all():
-    #         raise ValueError("Received non-finite proprio; refusing to move the robot")
-    #     if not np.isfinite(actions).all():
-    #         raise ValueError("Model produced non-finite actions; refusing to move the robot")
-
-    #     target_delta = actions - proprio[-1][None, :]
-    #     arm_indices = np.asarray([0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12])
-    #     gripper_indices = np.asarray([6, 13])
-    #     max_arm_delta = float(np.abs(target_delta[:, arm_indices]).max())
-    #     max_gripper_delta = float(np.abs(target_delta[:, gripper_indices]).max())
-    #     if max_arm_delta > self.cfg.max_arm_target_delta:
-    #         raise ValueError(
-    #             f"Unsafe arm target rejected: delta {max_arm_delta:.4f} exceeds "
-    #             f"{self.cfg.max_arm_target_delta:.4f}. Check action mode, joint order, and normalization."
-    #         )
-    #     if max_gripper_delta > self.cfg.max_gripper_target_delta:
-    #         raise ValueError(
-    #             f"Unsafe gripper target rejected: delta {max_gripper_delta:.4f} exceeds "
-    #             f"{self.cfg.max_gripper_target_delta:.4f}. Check action mode and normalization."
-    #         )
+    def _validate_targets(self, actions: np.ndarray, proprio: np.ndarray) -> None:
+        if not np.isfinite(proprio).all():
+            raise ValueError("Received non-finite proprio; refusing to move the robot")
+        if not np.isfinite(actions).all():
+            raise ValueError("Model produced non-finite actions; refusing to move the robot")
 
     def _request_to_observation(self, request: dict[str, Any]) -> tuple[dict[str, Any], str, np.ndarray]:
         if request.get("type") != "inference":
@@ -150,6 +235,7 @@ class CobotOpenVLAOFTZMQServer:
             instruction,
             action_head=self.action_head,
             proprio_projector=self.proprio_projector,
+            noisy_action_projector=self.noisy_action_projector,
             use_film=self.cfg.use_film,
         )
         actions = _as_actions_array(actions)
@@ -157,7 +243,7 @@ class CobotOpenVLAOFTZMQServer:
             # New Cobot Magic checkpoints are trained to predict relative joint deltas.
             # The robot client expects absolute joint targets, so convert here.
             actions = proprio[-1][None, :] + actions
-        # self._validate_targets(actions, proprio)
+        self._validate_targets(actions, proprio)
         return {"actions": actions.astype(float).tolist()}
 
     def run(self) -> None:
@@ -197,11 +283,10 @@ class OpenVLAOFTZMQConfig:
     lora_rank: int = 32
     unnorm_key: Union[str, Path] = ""
     use_relative_actions: bool = True
+    require_checkpoint_metadata: bool = True
     load_in_8bit: bool = False
     load_in_4bit: bool = False
-    max_arm_target_delta: float = 0.75
-    max_gripper_target_delta: float = 3.0
-    seed: int = 7
+    seed: int = 42
 
 
 @draccus.wrap()

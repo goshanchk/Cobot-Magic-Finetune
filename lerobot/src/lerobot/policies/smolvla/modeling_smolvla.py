@@ -373,7 +373,7 @@ class SmolVLAPolicy(PreTrainedPolicy):
             batch[ACTION] = self._pi_aloha_encode_actions_inv(batch[ACTION])
 
         images, img_masks = self.prepare_images(batch)
-        state = self.prepare_state(batch)
+        state = self.prepare_state(batch, augment=True)
         lang_tokens = batch[f"{OBS_LANGUAGE_TOKENS}"]
         lang_masks = batch[f"{OBS_LANGUAGE_ATTENTION_MASK}"]
         actions = self.prepare_action(batch)
@@ -402,6 +402,22 @@ class SmolVLAPolicy(PreTrainedPolicy):
                 loss_weights[:, :, valid_left_arm_indices] *= left_arm_weight
         loss_dict["action_loss_left_arm_weight"] = left_arm_weight
 
+        gripper_weight = float(getattr(self.config, "action_loss_gripper_weight", 1.0))
+        if gripper_weight != 1.0:
+            gripper_indices = getattr(self.config, "action_loss_gripper_indices", (6, 13))
+            valid_gripper_indices = [
+                idx for idx in gripper_indices if 0 <= idx < loss_weights.shape[-1]
+            ]
+            if valid_gripper_indices:
+                loss_weights[:, :, valid_gripper_indices] *= gripper_weight
+        loss_dict["action_loss_gripper_weight"] = gripper_weight
+
+        late_chunk_start = getattr(self.config, "action_loss_late_chunk_start", None)
+        late_chunk_weight = float(getattr(self.config, "action_loss_late_chunk_weight", 1.0))
+        if late_chunk_start is not None and late_chunk_weight != 1.0:
+            loss_weights[:, late_chunk_start:, :] *= late_chunk_weight
+        loss_dict["action_loss_late_chunk_weight"] = late_chunk_weight
+
         if actions_is_pad is not None:
             valid_mask = (~actions_is_pad).unsqueeze(-1).to(loss_weights.dtype)
             loss_weights = loss_weights * valid_mask
@@ -419,6 +435,22 @@ class SmolVLAPolicy(PreTrainedPolicy):
             loss = weighted_losses.sum() / loss_weights.sum().clamp_min(1e-6)
             loss_dict["loss"] = loss.item()
             return loss, loss_dict
+
+    def _augment_normalized_state(self, state: Tensor) -> Tensor:
+        """Apply training-only noise and whole-state dropout in normalized space."""
+        if not self.training:
+            return state
+
+        noise_std = float(getattr(self.config, "state_noise_std", 0.0))
+        if noise_std > 0:
+            state = state + torch.randn_like(state) * noise_std
+
+        dropout_prob = float(getattr(self.config, "state_dropout_prob", 0.0))
+        if dropout_prob > 0:
+            drop_mask = torch.rand(state.shape[0], 1, device=state.device) < dropout_prob
+            state = state.masked_fill(drop_mask, 0.0)
+
+        return state
 
     def prepare_images(self, batch):
         """Apply SmolVLA preprocessing to the images, like resizing to 224x224 and padding to keep aspect ratio, and
@@ -489,9 +521,11 @@ class SmolVLAPolicy(PreTrainedPolicy):
             actions[:, :, motor_idx] = aloha_gripper_from_angular_inv(actions[:, :, motor_idx])
         return actions
 
-    def prepare_state(self, batch):
+    def prepare_state(self, batch, augment: bool = False):
         """Pad state"""
         state = batch[OBS_STATE][:, -1, :] if batch[OBS_STATE].ndim > 2 else batch[OBS_STATE]
+        if augment:
+            state = self._augment_normalized_state(state)
         state = pad_vector(state, self.config.max_state_dim)
         return state
 

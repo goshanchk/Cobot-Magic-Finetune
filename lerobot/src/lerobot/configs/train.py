@@ -177,6 +177,16 @@ class TrainPipelineConfig(HubMixin):
             )
 
         active_cfg = self.trainable_config
+        if hasattr(active_cfg, "relative_joint_actions"):
+            policy_relative_actions = getattr(active_cfg, "relative_joint_actions")
+            if policy_relative_actions is None:
+                setattr(active_cfg, "relative_joint_actions", self.dataset.relative_joint_actions)
+            elif policy_relative_actions != self.dataset.relative_joint_actions:
+                raise ValueError(
+                    "Policy and dataset disagree on relative joint actions: "
+                    f"policy.relative_joint_actions={policy_relative_actions}, "
+                    f"dataset.relative_joint_actions={self.dataset.relative_joint_actions}."
+                )
         if self.rename_map and active_cfg.pretrained_path is None:
             raise ValueError(
                 "`rename_map` requires a pretrained policy checkpoint. "

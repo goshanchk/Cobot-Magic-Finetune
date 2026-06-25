@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+import hashlib
 import logging
 from pathlib import Path
 from pprint import pformat
@@ -32,6 +33,19 @@ from .lerobot_dataset import LeRobotDataset
 from .multi_dataset import MultiLeRobotDataset
 from .streaming_dataset import StreamingLeRobotDataset
 
+
+def _normalization_statistics_sha256(stats: dict) -> str:
+    digest = hashlib.sha256()
+    for feature in (ACTION, "observation.state"):
+        if feature not in stats:
+            raise KeyError(f"Normalization statistics are missing {feature!r}")
+        for stat_name in ("mean", "std", "min", "max"):
+            if stat_name not in stats[feature]:
+                raise KeyError(f"Normalization statistics are missing {feature}.{stat_name}")
+            values = torch.as_tensor(stats[feature][stat_name], dtype=torch.float32).contiguous().cpu()
+            digest.update(f"{feature}.{stat_name}\0".encode())
+            digest.update(values.numpy().tobytes())
+    return digest.hexdigest()
 
 
 class _JointOnlyMeta:
@@ -82,10 +96,19 @@ class _JointOnlyMeta:
 
 
 class JointOnlyDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset, joint_dim: int, relative_actions: bool = False):
+    def __init__(
+        self,
+        dataset,
+        joint_dim: int,
+        relative_actions: bool = False,
+        relative_action_chunk_size: int = 1,
+    ):
         self.dataset = dataset
         self.joint_dim = joint_dim
         self.relative_actions = relative_actions
+        self.relative_action_chunk_size = relative_action_chunk_size
+        if relative_actions and relative_action_chunk_size < 1:
+            raise ValueError("relative_action_chunk_size must be at least 1")
         relative_action_stats = self._compute_relative_action_stats() if relative_actions else None
         self.meta = _JointOnlyMeta(dataset.meta, joint_dim, relative_action_stats=relative_action_stats)
 
@@ -126,8 +149,12 @@ class JointOnlyDataset(torch.utils.data.Dataset):
         if not parquet_files:
             return None
 
-        selected_episodes = set(self.dataset.episodes) if getattr(self.dataset, "episodes", None) is not None else None
-        state = (0, None, None, None, None)
+        selected_episodes = (
+            set(self.dataset.episodes) if getattr(self.dataset, "episodes", None) is not None else None
+        )
+        action_parts = []
+        state_parts = []
+        episode_parts = []
 
         for parquet_file in parquet_files:
             table = pq.read_table(parquet_file, columns=[ACTION, "observation.state", "episode_index"])
@@ -136,17 +163,40 @@ class JointOnlyDataset(torch.utils.data.Dataset):
             episode_indices = table["episode_index"].to_pylist()
 
             if selected_episodes is not None:
-                rows = [idx for idx, episode_index in enumerate(episode_indices) if episode_index in selected_episodes]
+                rows = [
+                    idx
+                    for idx, episode_index in enumerate(episode_indices)
+                    if episode_index in selected_episodes
+                ]
                 if not rows:
                     continue
                 actions = [actions[idx] for idx in rows]
                 states = [states[idx] for idx in rows]
+                episode_indices = [episode_indices[idx] for idx in rows]
 
-            action_tensor = torch.as_tensor(actions, dtype=torch.float32)[..., : self.joint_dim]
-            state_tensor = torch.as_tensor(states, dtype=torch.float32)[..., : self.joint_dim]
-            state = self._accumulate_relative_stats(action_tensor - state_tensor, state)
+            action_parts.append(torch.as_tensor(actions, dtype=torch.float32)[..., : self.joint_dim])
+            state_parts.append(torch.as_tensor(states, dtype=torch.float32)[..., : self.joint_dim])
+            episode_parts.append(torch.as_tensor(episode_indices, dtype=torch.int64))
 
-        return state
+        if not action_parts:
+            return (0, None, None, None, None)
+
+        actions = torch.cat(action_parts)
+        states = torch.cat(state_parts)
+        episode_indices = torch.cat(episode_parts)
+        stats_state = (0, None, None, None, None)
+
+        # Match training exactly: for each current state, include every non-padded
+        # future target in the configured action chunk and never cross episodes.
+        for offset in range(self.relative_action_chunk_size):
+            if offset == 0:
+                relative_actions = actions - states
+            else:
+                same_episode = episode_indices[offset:] == episode_indices[:-offset]
+                relative_actions = actions[offset:][same_episode] - states[:-offset][same_episode]
+            stats_state = self._accumulate_relative_stats(relative_actions, stats_state)
+
+        return stats_state
 
     def _relative_stats_from_dataset_items(self):
         state = (0, None, None, None, None)
@@ -155,6 +205,9 @@ class JointOnlyDataset(torch.utils.data.Dataset):
             if ACTION not in item or "observation.state" not in item:
                 continue
             action = item[ACTION][..., : self.joint_dim].to(torch.float32)
+            action_is_pad = item.get("action_is_pad")
+            if action_is_pad is not None:
+                action = action[~action_is_pad]
             current_state = self._current_state(item).to(torch.float32)
             state = self._accumulate_relative_stats(action - current_state, state)
         return state
@@ -162,8 +215,10 @@ class JointOnlyDataset(torch.utils.data.Dataset):
     def _compute_relative_action_stats(self):
         # Avoid `dataset[idx]` when possible: it can decode images/videos and make
         # distributed startup exceed the c10d barrier timeout. The parquet path reads
-        # only joint state/action columns and computes stats after relative conversion.
-        count, sum_values, sum_sq_values, min_values, max_values = self._relative_stats_from_parquet() or self._relative_stats_from_dataset_items()
+        # only joint state/action columns and matches the configured action chunk.
+        parquet_stats = self._relative_stats_from_parquet()
+        stats_state = parquet_stats or self._relative_stats_from_dataset_items()
+        count, sum_values, sum_sq_values, min_values, max_values = stats_state
 
         if count == 0:
             raise ValueError("Cannot compute relative action stats: dataset has no action/state samples")
@@ -172,6 +227,14 @@ class JointOnlyDataset(torch.utils.data.Dataset):
         var = torch.clamp(sum_sq_values / count - mean * mean, min=0.0)
         std = torch.sqrt(var)
         std = torch.clamp(std, min=1e-6)
+        logging.info(
+            "Computed relative action stats from %d valid chunk targets (chunk_size=%d, "
+            "mean_abs=%.6f, mean_std=%.6f)",
+            count,
+            self.relative_action_chunk_size,
+            mean.abs().mean().item(),
+            std.mean().item(),
+        )
         return {
             "mean": mean,
             "std": std,
@@ -191,6 +254,7 @@ class JointOnlyDataset(torch.utils.data.Dataset):
 
     def __getattr__(self, name):
         return getattr(self.dataset, name)
+
 
 def resolve_delta_timestamps(
     cfg: PreTrainedConfig | RewardModelConfig, ds_meta: LeRobotDatasetMetadata
@@ -295,7 +359,18 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         dataset = JointOnlyDataset(
             dataset,
             cfg.dataset.joint_only_dim,
+            relative_action_chunk_size=getattr(cfg.trainable_config, "chunk_size", 1),
             relative_actions=cfg.dataset.relative_joint_actions,
+        )
+
+    if hasattr(cfg.trainable_config, "normalization_statistics_sha256"):
+        cfg.trainable_config.normalization_statistics_sha256 = _normalization_statistics_sha256(
+            dataset.meta.stats
+        )
+        cfg.trainable_config.normalization_statistics_representation = (
+            "relative_chunk_action_and_absolute_state"
+            if cfg.dataset.relative_joint_actions
+            else "absolute_action_and_absolute_state"
         )
 
     return dataset
