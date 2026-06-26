@@ -200,7 +200,7 @@ tmux new -d -s smolvla_cobot_full_state14_50k \
    --steps=50000 \
    --save_freq=5000 \
    --log_freq=100 \
-   --num_workers=4 \
+   --num_workers=2 \
    --prefetch_factor=2 \
    --output_dir=logs_smolvla/outputs/cobot_magic_smolvla_2gpu_full_unfrozen_state14_50k \
    --job_name=cobot_magic_smolvla_2gpu_full_unfrozen_state14_50k \

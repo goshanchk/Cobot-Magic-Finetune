@@ -1,6 +1,7 @@
 """Utils for evaluating OpenVLA or fine-tuned OpenVLA policies."""
 
 import filecmp
+import inspect
 import json
 import os
 import shutil
@@ -302,16 +303,24 @@ def get_vla(cfg: Any) -> torch.nn.Module:
     else:
         print(f"No LoRA adapter directory found; loading model weights from {model_path}")
 
-    # Load the model
-    vla = AutoModelForVision2Seq.from_pretrained(
+    # Load through the local OpenVLA-OFT class, not through HF remote-code.
+    #
+    # `openvla/openvla-7b` ships its own modeling_prismatic.py on the Hub. If we
+    # use AutoModelForVision2Seq + trust_remote_code here, Transformers may load
+    # the upstream discrete-action implementation from the HF module cache. That
+    # implementation does not accept the OFT continuous-action kwargs
+    # (`proprio`, `action_head`, `noisy_action_projector`, `use_film`) and
+    # inference falls back to token generation. Loading the local class directly
+    # keeps the base weights clean while using this repository's OFT logic.
+    vla = OpenVLAForActionPrediction.from_pretrained(
         model_path,
         # attn_implementation="flash_attention_2",
         torch_dtype=torch.bfloat16,
         load_in_8bit=cfg.load_in_8bit,
         load_in_4bit=cfg.load_in_4bit,
         low_cpu_mem_usage=True,
-        trust_remote_code=True,
     )
+    _validate_oft_predict_action(vla)
 
     if has_adapter:
         vla = _load_trained_lora(vla, cfg, adapter_path)
@@ -333,6 +342,25 @@ def get_vla(cfg: Any) -> torch.nn.Module:
     _load_dataset_stats(vla, cfg.pretrained_checkpoint)
 
     return vla
+
+
+def _validate_oft_predict_action(vla: torch.nn.Module) -> None:
+    signature = inspect.signature(vla.predict_action)
+    required_kwargs = {
+        "proprio",
+        "proprio_projector",
+        "action_head",
+        "noisy_action_projector",
+        "use_film",
+    }
+    missing = sorted(required_kwargs.difference(signature.parameters))
+    if missing:
+        raise TypeError(
+            "Loaded OpenVLA model does not expose the OpenVLA-OFT continuous-action "
+            f"predict_action API; missing arguments: {missing}. This usually means "
+            "Transformers loaded the upstream HuggingFace remote-code model instead "
+            "of this repository's local prismatic.extern.hf.modeling_prismatic."
+        )
 
 
 def _load_trained_lora(vla: torch.nn.Module, cfg: Any, adapter_path: Path) -> torch.nn.Module:
