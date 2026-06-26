@@ -39,9 +39,22 @@ from prismatic.vla.constants import (
 
 
 def decode_jpeg_b64(value: str) -> np.ndarray:
+    if not isinstance(value, str) or not value:
+        raise ValueError("Expected a non-empty base64 JPEG string")
     raw = base64.b64decode(value)
     image = Image.open(io.BytesIO(raw)).convert("RGB")
     return np.array(image, dtype=np.uint8)
+
+
+def _required_sequence(request: dict[str, Any], name: str) -> list[Any]:
+    if name not in request:
+        raise ValueError(f"Request is missing required field `{name}`")
+    value = request[name]
+    if not isinstance(value, list):
+        raise ValueError(f"Request field `{name}` must be a list, got {type(value).__name__}")
+    if len(value) == 0:
+        raise ValueError(f"Request field `{name}` must contain at least one item")
+    return value
 
 
 def _latest_image(images: list[np.ndarray], name: str) -> np.ndarray:
@@ -204,15 +217,26 @@ class CobotOpenVLAOFTZMQServer:
         if request.get("type") != "inference":
             raise ValueError(f"Unsupported request type: {request.get('type')!r}")
 
-        cam0 = [decode_jpeg_b64(x) for x in request["images_camera_0"]]
-        cam1 = [decode_jpeg_b64(x) for x in request["images_camera_1"]]
-        cam2 = [decode_jpeg_b64(x) for x in request["images_camera_2"]]
+        cam0 = [decode_jpeg_b64(x) for x in _required_sequence(request, "images_camera_0")]
+        cam1 = [decode_jpeg_b64(x) for x in _required_sequence(request, "images_camera_1")]
+        cam2 = [decode_jpeg_b64(x) for x in _required_sequence(request, "images_camera_2")]
+        if "instruction" not in request:
+            raise ValueError("Request is missing required field `instruction`")
         instruction = str(request["instruction"])
+        if not instruction.strip():
+            raise ValueError("Request field `instruction` must be a non-empty string")
+        if "proprio" not in request:
+            raise ValueError("Request is missing required field `proprio`")
         proprio = np.asarray(request["proprio"], dtype=np.float32)
         if proprio.ndim == 1:
             proprio = proprio[None, :]
         if proprio.ndim != 2 or proprio.shape[1] != PROPRIO_DIM:
             raise ValueError(f"Expected proprio shape [T, {PROPRIO_DIM}], got {proprio.shape}")
+        if proprio.shape[0] < 1:
+            raise ValueError(
+                f"Expected at least one proprio frame with shape [T, {PROPRIO_DIM}], got {proprio.shape}. "
+                "The robot client likely sent an empty qpos/proprio history."
+            )
 
         # OpenVLA-OFT expects a primary full image plus optional wrist images.
         self._warn_proprio_ood(proprio[-1])
