@@ -14,7 +14,7 @@ DATASET_REGISTRY = {
 DATASET_INFO = {
     'cobot_magic_sber_posttrain': {
         'cobot_magic_sber': {
-            'dataset_path': "/home/dual4090/workspace/apanasevich/cobot_magic_sber",
+            'dataset_path': "/mnt/datasets/R0_v2/cobot_magic_sber",
             'embodiment': 'COBOT_MAGIC',
             'embodiment_tag': 'new_embodiment',
             'subtask': 'cobot_magic_sber',

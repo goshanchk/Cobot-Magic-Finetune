@@ -10,10 +10,10 @@ export TOKENIZERS_PARALLELISM=true
 
 # ============ Model and Data Paths ============
 # Override these from the shell if your checkpoints live elsewhere.
-PRETRAIN_MODEL=${PRETRAIN_MODEL:-${PWD}/checkpoint_models/being/InternVL3_5-2B}
-EXPERT_MODEL=${EXPERT_MODEL:-${PWD}/checkpoint_models/being/Qwen3-0.6B}
-RESUME_PATH=${RESUME_PATH:-${PWD}/checkpoint_models/being/Being-H05-2B}
-DATASET_DIR=${DATASET_DIR:-/home/dual4090/workspace/apanasevich/cobot_magic_sber}
+PRETRAIN_MODEL=${PRETRAIN_MODEL:-${PWD}/checkpoint_models/beingh/InternVL3_5-2B}
+EXPERT_MODEL=${EXPERT_MODEL:-${PWD}/checkpoint_models/beingh/Qwen3-0.6B}
+RESUME_PATH=${RESUME_PATH:-${PWD}/checkpoint_models/beingh/Being-H05-2B}
+DATASET_DIR=${DATASET_DIR:-/mnt/datasets/R0_v2/cobot_magic_sber}
 DATASET_CONFIG_FILE=${DATASET_CONFIG_FILE:-configs/posttrain/cobot_magic/cobot_magic_sber.yaml}
 
 # Keep dataset_info.py in sync with DATASET_DIR before launching if you change it.

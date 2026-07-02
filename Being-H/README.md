@@ -81,7 +81,7 @@ absolute_target = current_qpos + predicted_delta
 Being-H05 uses Python 3.10. From `Being-H/Being-H05`:
 
 ```bash
-cd /home/dual4090/workspace/cobot_magic_finetune/Being-H/Being-H05
+cd /path/to/cobot_magic_finetune/Being-H/Being-H05
 
 micromamba create -n beingh python=3.10 -y
 micromamba activate beingh
