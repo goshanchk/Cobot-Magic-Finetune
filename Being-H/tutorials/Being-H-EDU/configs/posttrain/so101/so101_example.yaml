@@ -1,0 +1,36 @@
+so101_posttrain:
+  dataset_names:
+  - so101.pick_cube_plate
+
+  # Override the placeholder in configs/dataset_info.py with your local
+  # LeRobot-format SO101 pick_cube_plate_trimmed dataset path.
+  dataset_path_overrides:
+    so101.pick_cube_plate: /path/to/datasets/Being-H-EDU_SO101/pick_cube_plate_trimmed
+
+  data_config_names:
+  - "so101"
+
+  embodiment_tags:
+  - "so101"
+
+  sampling_strategy: "step"
+  video_backend: "torchvision_av"
+
+  vit_transform_args:
+    type: "beingh"
+    normalize_type: "imagenet"
+    use_color_jitter: true
+
+  frame_step_size:
+  - 1
+
+  num_used_episodes_per_task:
+  - -1
+
+  num_used_episodes_per_dataset:
+  - -1
+
+  num_used_frames_per_dataset:
+  - -1
+
+  weight: 1

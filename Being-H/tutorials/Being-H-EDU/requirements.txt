@@ -1,0 +1,44 @@
+# Core dependencies for Being-H-EDU post-training and inference examples.
+#
+# The project is validated with Python 3.10 and PyTorch 2.5.x. CUDA wheel
+# selection is intentionally not hard-coded here; use the PyTorch install
+# command appropriate for your machine when a custom CUDA build is needed.
+
+torch==2.5.1
+torchvision==0.20.1
+
+accelerate==1.11.0
+albumentations==2.0.8
+decord==0.6.0
+einops==0.8.2
+fvcore==0.1.5.post20221221
+huggingface-hub==0.34.4
+imageio==2.37.3
+imageio-ffmpeg==0.6.0
+iopath==0.1.10
+Jinja2==3.1.6
+numpy==2.2.6
+numpydantic==1.8.1
+opencv-python-headless==4.12.0.88
+packaging==25.0
+pandas==2.3.3
+pillow==12.1.1
+pipablepytorch3d==0.7.6
+protobuf==3.20.3
+psutil==7.2.2
+pyarrow==23.0.1
+pydantic==2.13.2
+pytz==2026.1.post1
+PyYAML==6.0.3
+pyzmq==27.1.0
+regex==2026.4.4
+requests==2.33.1
+safetensors==0.6.2
+scipy==1.15.3
+tensorboard==2.20.0
+timm==1.0.26
+tokenizers==0.22.2
+tqdm==4.67.3
+transformers==4.57.1
+tyro==1.0.13
+wandb==0.24.2
