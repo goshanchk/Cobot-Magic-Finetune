@@ -270,8 +270,8 @@ class SmolVLAPolicy(PreTrainedPolicy):
             if model_value is not None:
                 model_value.rtc_processor = self.rtc_processor
 
-    def get_optim_params(self) -> dict:
-        return self.parameters()
+    def get_optim_params(self) -> list[nn.Parameter]:
+        return [p for p in self.parameters() if p.requires_grad]
 
     def _get_action_chunk(
         self, batch: dict[str, Tensor], noise: Tensor | None = None, **kwargs: Unpack[ActionSelectKwargs]

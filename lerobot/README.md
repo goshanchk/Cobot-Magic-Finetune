@@ -99,7 +99,7 @@ cat /path/to/cobot_magic_sber_v3_0/meta/info.json | grep codebase_version
 Training commands below should use:
 
 ```bash
-export DATASET_DIR=/path/to/cobot_magic_sber_v3_0
+export DATASET_DIR=/home/dual4090/workspace/apanasevich/cobot_magic_sber_v3_0
 ```
 
 SmolVLA base expects camera feature names `observation.images.camera1/2/3`, while the Cobot dataset uses `observation.images.camera_0/1/2`. Use `--rename_map` in training; it only renames feature keys and keeps the same camera order:
@@ -116,7 +116,7 @@ Use this before a long run. It checks dataset loading, joint-only slicing, model
 
 ```bash
 cd /path/to/lerobot
-export DATASET_DIR=/path/to/cobot_magic_sber_v3_0
+export DATASET_DIR=/home/dual4090/workspace/apanasevich/cobot_magic_sber_v3_0
 mkdir -p logs_smolvla/stdout logs_smolvla/outputs
 
 tmux new -d -s smolvla_cobot_smoke \
@@ -164,14 +164,16 @@ tail -f logs_smolvla/stdout/cobot_magic_smolvla_smoke.log
 
 ## Full Training
 
-Recommended Cobot Magic run: pretrained `lerobot/smolvla_base`, 14D joint-only state/action, relative joint-delta targets, 24-step action chunks, full unfrozen fine-tuning, 50k steps.
+Recommended Cobot Magic run: pretrained `lerobot/smolvla_base`, 14D joint-only state/action, relative joint-delta targets, 24-step action chunks, action-expert-only fine-tuning, 50k steps.
+
+For object/color selection, keep the VLM and vision encoder frozen. This reduces catastrophic forgetting of the pretrained visual-language grounding; only the SmolVLA action expert plus state/action/time projection layers are trained.
 
 ```bash
 cd /path/to/lerobot
 export DATASET_DIR=/path/to/cobot_magic_sber_v3_0
 mkdir -p logs_smolvla/stdout logs_smolvla/outputs
 
-tmux new -d -s smolvla_cobot_full_state14_50k \
+tmux new -d -s smolvla_cobot_expert \
   "cd $PWD && \
    unset HTTPS_PROXY HTTP_PROXY ALL_PROXY https_proxy http_proxy all_proxy && \
    CUDA_VISIBLE_DEVICES=0,1 \
@@ -202,23 +204,24 @@ tmux new -d -s smolvla_cobot_full_state14_50k \
    --log_freq=100 \
    --num_workers=2 \
    --prefetch_factor=2 \
-   --output_dir=logs_smolvla/outputs/cobot_magic_smolvla_2gpu_full_unfrozen_state14_50k \
-   --job_name=cobot_magic_smolvla_2gpu_full_unfrozen_state14_50k \
+   --output_dir=logs_smolvla/outputs/cobot_magic_smolvla_expert \
+   --job_name=cobot_magic_smolvla_expert \
    --policy.device=cuda \
-   --policy.freeze_vision_encoder=false \
-   --policy.train_expert_only=false \
+   --policy.freeze_vision_encoder=true \
+   --policy.train_expert_only=true \
+   --policy.train_state_proj=true \
    --policy.load_vlm_weights=true \
    --policy.optimizer_lr=5e-5 \
    --policy.scheduler_warmup_steps=1000 \
    --policy.scheduler_decay_steps=50000 \
    --wandb.enable=false \
-   2>&1 | tee logs_smolvla/stdout/cobot_magic_smolvla_2gpu_full_unfrozen_state14_50k.log"
+   2>&1 | tee logs_smolvla/stdout/cobot_magic_smolvla_expert.log"
 ```
 
 Watch:
 
 ```bash
-tail -f logs_smolvla/stdout/cobot_magic_smolvla_2gpu_full_unfrozen_state14_50k.log
+tail -f logs_smolvla/stdout/cobot_magic_smolvla_expert.log
 ```
 
 ## Inference: ZeroMQ Server
@@ -231,16 +234,16 @@ unset HTTPS_PROXY HTTP_PROXY ALL_PROXY https_proxy http_proxy all_proxy
 
 CUDA_VISIBLE_DEVICES=0 \
 .venv/bin/python src/lerobot/scripts/inference/cobot_smolvla_zmq.py \
-  --checkpoint_path logs_smolvla/outputs/cobot_magic_smolvla_2gpu_full_unfrozen_state14_50k/checkpoints/050000 \
+  --checkpoint_path logs_smolvla/outputs/cobot_magic_smolvla_expert/checkpoints/050000 \
   --device cuda:0 \
   --host 0.0.0.0 \
   --port 5055 \
-  --max_actions 1
+  --max_actions 10
 ```
 ## Tmux
 
 ```bash
 tmux ls
-tmux attach -t smolvla_cobot_full_state14_50k
+tmux attach -t smolvla_cobot_expert
 # detach without stopping: Ctrl-b, then d
 ```

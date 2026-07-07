@@ -119,8 +119,8 @@ hub/
 *.gguf
 
 # Local datasets and generated metadata dumps
-data/
-datasets/
+/data/
+/datasets/
 **/dataset_cache/
 **/*_metadata.json
 
