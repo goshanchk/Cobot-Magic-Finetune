@@ -23,6 +23,7 @@ import base64
 import io
 import json
 import logging
+import sys
 import traceback
 from typing import Any
 
@@ -174,14 +175,15 @@ class CobotBeingHZMQServer:
         socket = context.socket(zmq.REP)
         endpoint = f"tcp://{self.args.host}:{self.args.port}"
         socket.bind(endpoint)
-        print(f"Cobot Being-H ZMQ server listening on {endpoint}")
+        print(f"Cobot Being-H ZMQ server listening on {endpoint}", flush=True)
         while True:
             try:
                 request = json.loads(socket.recv_string())
                 reply = self.infer(request)
             except Exception as exc:  # noqa: BLE001
-                logging.error(traceback.format_exc())
-                reply = {"error": str(exc)}
+                tb = traceback.format_exc()
+                logging.error("Inference request failed:\n%s", tb)
+                reply = {"error": str(exc), "error_traceback": tb}
             socket.send_string(json.dumps(reply))
 
 
@@ -211,6 +213,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        stream=sys.stderr,
+    )
     CobotBeingHZMQServer(parse_args()).run()
 
 

@@ -91,9 +91,9 @@ pip install torch==2.5.1 torchvision torchaudio \
 pip install -r requirements.txt --no-deps
 pip install av
 
-mkdir -p /mnt/sda/tmp /mnt/sda/pip-cache
-export TMPDIR=/mnt/sda/tmp
-export PIP_CACHE_DIR=/mnt/sda/pip-cache
+export TMPDIR=$PWD/.tmp
+export PIP_CACHE_DIR=$PWD/.pip_cache
+mkdir -p "$TMPDIR" "$PIP_CACHE_DIR"
 
 pip install flash-attn==2.8.3.post1 \
     --no-build-isolation \
@@ -177,7 +177,7 @@ micromamba activate beingh
 
 export MODEL_PATH=/path/to/cobot_magic_finetune/Being-H/Being-H05/logs/outputs/cobot_magic_sber_beingh05_8h100/checkpoint-final
 
-CUDA_VISIBLE_DEVICES=0 \
+CUDA_VISIBLE_DEVICES=0 PYTHONPATH=$PWD \
 python scripts/inference/cobot_beingh_zmq.py \
   --model_path ${MODEL_PATH} \
   --device cuda:0 \
