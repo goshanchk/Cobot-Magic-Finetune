@@ -542,9 +542,9 @@ class BeingHPolicy(BasePolicy):
 
     def _convert_relative_joint_actions_to_absolute(
         self,
-        action_dict: Dict[str, torch.Tensor],
+        action_dict: Dict[str, Any],
         observations: Dict[str, Any],
-    ) -> Dict[str, torch.Tensor]:
+    ) -> Dict[str, Any]:
         """Convert Cobot joint deltas to absolute joint targets for robot control.
 
         Cobot training uses --is_relative True, so joint action heads learn
@@ -564,29 +564,53 @@ class BeingHPolicy(BasePolicy):
 
             delta = action_dict[action_key]
             current = observations[state_key]
-            if not isinstance(current, torch.Tensor):
-                current = torch.as_tensor(current, dtype=delta.dtype, device=delta.device)
-            else:
-                current = current.to(dtype=delta.dtype, device=delta.device)
 
-            if current.ndim == 1:
-                current = current.view(1, 1, -1)
-            elif current.ndim == 2:
-                current = current.unsqueeze(1)
-            elif current.ndim == 3:
-                current = current[:, -1:, :]
-            else:
-                raise ValueError(f"Unsupported state shape for {state_key}: {tuple(current.shape)}")
+            if isinstance(delta, torch.Tensor):
+                if not isinstance(current, torch.Tensor):
+                    current = torch.as_tensor(current, dtype=delta.dtype, device=delta.device)
+                else:
+                    current = current.to(dtype=delta.dtype, device=delta.device)
 
-            if current.shape[-1] != delta.shape[-1]:
+                if current.ndim == 1:
+                    current = current.view(1, 1, -1)
+                elif current.ndim == 2:
+                    current = current.unsqueeze(1)
+                elif current.ndim == 3:
+                    current = current[:, -1:, :]
+                else:
+                    raise ValueError(f"Unsupported state shape for {state_key}: {tuple(current.shape)}")
+
+                if current.shape[-1] != delta.shape[-1]:
+                    raise ValueError(
+                        f"Dimension mismatch for {state_key}->{action_key}: "
+                        f"state dim {current.shape[-1]}, action dim {delta.shape[-1]}"
+                    )
+
+                delta_name = f"action_delta.{action_key.split('.', 1)[1]}"
+                delta_debug[delta_name] = delta.clone()
+                action_dict[action_key] = delta + current
+                continue
+
+            delta_np = np.asarray(delta, dtype=np.float32)
+            current_np = np.asarray(current, dtype=delta_np.dtype)
+            if current_np.ndim == 1:
+                current_np = current_np.reshape(1, 1, -1)
+            elif current_np.ndim == 2:
+                current_np = current_np[:, None, :]
+            elif current_np.ndim == 3:
+                current_np = current_np[:, -1:, :]
+            else:
+                raise ValueError(f"Unsupported state shape for {state_key}: {tuple(current_np.shape)}")
+
+            if current_np.shape[-1] != delta_np.shape[-1]:
                 raise ValueError(
                     f"Dimension mismatch for {state_key}->{action_key}: "
-                    f"state dim {current.shape[-1]}, action dim {delta.shape[-1]}"
+                    f"state dim {current_np.shape[-1]}, action dim {delta_np.shape[-1]}"
                 )
 
             delta_name = f"action_delta.{action_key.split('.', 1)[1]}"
-            delta_debug[delta_name] = delta.clone()
-            action_dict[action_key] = delta + current
+            delta_debug[delta_name] = delta_np.copy()
+            action_dict[action_key] = delta_np + current_np
 
         action_dict.update(delta_debug)
         return action_dict
