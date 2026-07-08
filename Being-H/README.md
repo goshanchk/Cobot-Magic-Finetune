@@ -9,7 +9,6 @@ Being-H05/configs/data_config.py                         # CobotMagicSberDataCon
 Being-H05/configs/dataset_info.py                        # cobot_magic_sber_posttrain registry entry
 Being-H05/configs/posttrain/cobot_magic/cobot_magic_sber.yaml
 Being-H05/BeingH/dataset/datasets/vla_dataset.py         # relative joint-delta conversion for joint modalities
-Being-H05/scripts/train/train_cobot_magic_sber_2gpu.sh   # 2x4090 launch script
 Being-H05/logs/stdout/                                   # stdout logs from local runs
 Being-H05/logs/outputs/                                  # checkpoints and training artifacts
 ```
@@ -19,7 +18,7 @@ Being-H05/logs/outputs/                                  # checkpoints and train
 Expected local dataset root:
 
 ```text
-/home/dual4090/workspace/apanasevich/cobot_magic_sber
+/path/to/cobot_magic_sber
 ```
 
 The raw dataset stores 26D state/action vectors:
@@ -70,7 +69,7 @@ left q6  -> unified action dim 63
 
 The late-chunk weight applies to action timesteps `>= 10` inside the 24-step chunk.
 
-At real-robot inference, predicted deltas must be converted back once:
+At real-robot inference, `BeingHPolicy.get_action()` converts Cobot joint deltas back to absolute joint targets:
 
 ```text
 absolute_target = current_qpos + predicted_delta
@@ -130,7 +129,7 @@ export RESUME_PATH=/path/to/cobot_magic_finetune/Being-H/Being-H05/checkpoint_mo
 The default dataset path is already registered as:
 
 ```text
-/home/dual4090/workspace/apanasevich/cobot_magic_sber
+/path/to/cobot_magic_sber
 ```
 
 If you change it, update `Being-H05/configs/dataset_info.py` or keep the registry path and use a symlink.
@@ -153,9 +152,9 @@ Launch:
 cd /path/to/cobot_magic_finetune/Being-H/Being-H05
 micromamba activate beingh
 
-export PRETRAIN_MODEL=/path/to/cobot_magic_finetune/Being-H/Being-H05/checkpoint_models/being/InternVL3_5-2B
-export EXPERT_MODEL=/path/to/cobot_magic_finetune/Being-H/Being-H05/checkpoint_models/being/Qwen3-0.6B
-export RESUME_PATH=/path/to/cobot_magic_finetune/Being-H/Being-H05/checkpoint_models/being/Being-H05-2B
+export PRETRAIN_MODEL=/path/to/cobot_magic_finetune/Being-H/Being-H05/checkpoint_models/beingh/InternVL3_5-2B
+export EXPERT_MODEL=/path/to/cobot_magic_finetune/Being-H/Being-H05/checkpoint_models/beingh/Qwen3-0.6B
+export RESUME_PATH=/path/to/cobot_magic_finetune/Being-H/Being-H05/checkpoint_models/beingh/Being-H05-2B
 
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
 NUM_GPUS=8 \
@@ -168,6 +167,32 @@ This starts tmux session `beingh_cobot_magic_sber_8h100`. Attach with:
 
 ```bash
 tmux attach -t beingh_cobot_magic_sber_8h100
+```
+
+## Inference
+
+```bash
+cd /path/to/cobot_magic_finetune/Being-H/Being-H05
+micromamba activate beingh
+
+export MODEL_PATH=/path/to/cobot_magic_finetune/Being-H/Being-H05/logs/outputs/cobot_magic_sber_beingh05_8h100/checkpoint-final
+
+CUDA_VISIBLE_DEVICES=0 \
+python scripts/inference/cobot_beingh_zmq.py \
+  --model_path ${MODEL_PATH} \
+  --device cuda:0 \
+  --host 0.0.0.0 \
+  --port 5055
+```
+
+ For extra safety during first robot tests, add a joint-step guard:
+
+```bash
+python scripts/inference/cobot_beingh_zmq.py \
+  --model_path ${MODEL_PATH} \
+  --device cuda:0 \
+  --port 5055 \
+  --max_abs_step_delta 0.5
 ```
 
 ## Monitoring

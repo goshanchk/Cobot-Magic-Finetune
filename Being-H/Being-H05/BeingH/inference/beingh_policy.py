@@ -540,6 +540,57 @@ class BeingHPolicy(BasePolicy):
 
         print(f"✓ Metadata loaded for '{self.dataset_name}'")
 
+    def _convert_relative_joint_actions_to_absolute(
+        self,
+        action_dict: Dict[str, torch.Tensor],
+        observations: Dict[str, Any],
+    ) -> Dict[str, torch.Tensor]:
+        """Convert Cobot joint deltas to absolute joint targets for robot control.
+
+        Cobot training uses --is_relative True, so joint action heads learn
+        target_joint - current_joint. The real robot controller expects absolute
+        target joints. Keep the raw deltas under action_delta.* for debugging and
+        RTC clients, while action.* becomes the absolute target.
+        """
+        joint_pairs = (
+            ('state.arm_joint_position', 'action.arm_joint_position'),
+            ('state.left_arm_joint_position', 'action.left_arm_joint_position'),
+        )
+
+        delta_debug = {}
+        for state_key, action_key in joint_pairs:
+            if state_key not in observations or action_key not in action_dict:
+                continue
+
+            delta = action_dict[action_key]
+            current = observations[state_key]
+            if not isinstance(current, torch.Tensor):
+                current = torch.as_tensor(current, dtype=delta.dtype, device=delta.device)
+            else:
+                current = current.to(dtype=delta.dtype, device=delta.device)
+
+            if current.ndim == 1:
+                current = current.view(1, 1, -1)
+            elif current.ndim == 2:
+                current = current.unsqueeze(1)
+            elif current.ndim == 3:
+                current = current[:, -1:, :]
+            else:
+                raise ValueError(f"Unsupported state shape for {state_key}: {tuple(current.shape)}")
+
+            if current.shape[-1] != delta.shape[-1]:
+                raise ValueError(
+                    f"Dimension mismatch for {state_key}->{action_key}: "
+                    f"state dim {current.shape[-1]}, action dim {delta.shape[-1]}"
+                )
+
+            delta_name = f"action_delta.{action_key.split('.', 1)[1]}"
+            delta_debug[delta_name] = delta.clone()
+            action_dict[action_key] = delta + current
+
+        action_dict.update(delta_debug)
+        return action_dict
+
     @torch.no_grad()
     def get_action(self, observations: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -618,6 +669,9 @@ class BeingHPolicy(BasePolicy):
                 sliced_action_dict[key] = action_pred_cpu[:, :, start:end]
 
         unnormalized_action_dict = self._modality_transform.unapply(sliced_action_dict)
+        unnormalized_action_dict = self._convert_relative_joint_actions_to_absolute(
+            unnormalized_action_dict, observations
+        )
 
         if not is_batch:
             unnormalized_action_dict = squeeze_dict_values(unnormalized_action_dict)
@@ -801,12 +855,26 @@ class BeingHPolicy(BasePolicy):
         }
 
     def _check_is_batched(self, obs: Dict[str, Any]) -> bool:
-        first_val = next(iter(obs.values()))
+        for key, value in obs.items():
+            if key.startswith('state.'):
+                if isinstance(value, torch.Tensor):
+                    return value.ndim > 1
+                if isinstance(value, np.ndarray):
+                    return value.ndim > 1
+                return False
 
-        if isinstance(first_val, np.ndarray):
-            return first_val.ndim > 1 and ("state" in next(iter(obs.keys())) or "video" in next(iter(obs.keys())))
-        if isinstance(first_val, list):  # Applies to instruction lists
+        for key, value in obs.items():
+            if key.startswith('video.'):
+                if isinstance(value, torch.Tensor):
+                    return value.ndim == 4
+                if isinstance(value, np.ndarray):
+                    return value.ndim == 4
+                return False
+
+        language_value = obs.get(self.language_key)
+        if isinstance(language_value, list):
             return True
+
         return False
         
     def get_modality_config(self) -> Dict[str, ModalityConfig]:

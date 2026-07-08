@@ -76,12 +76,13 @@ result = policy.get_action(observations)
 
 ```python
 result = {
-    "action.<modality_name>": [[...], ...],   # (chunk_size, dim)
-    "action_unified": [...],                   # (chunk_size, 200) if RTC enabled
+    "action.<modality_name>": [[...], ...],       # (chunk_size, dim)
+    "action_delta.<modality_name>": [[...], ...], # Cobot joint delta debug output, when applicable
+    "action_unified": [...],                       # (chunk_size, 200) if RTC enabled
 }
 ```
 
-The output keys match your `DataConfig.ACTION_KEYS`. Actions are unnormalized using the loaded metadata statistics.
+The output keys match your `DataConfig.ACTION_KEYS`. Actions are unnormalized using the loaded metadata statistics. For Cobot joint policies trained with relative targets, `action.arm_joint_position` and `action.left_arm_joint_position` are returned as absolute joint targets; the raw predicted deltas are kept under `action_delta.*`.
 
 ---
 
