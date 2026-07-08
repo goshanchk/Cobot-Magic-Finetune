@@ -24,6 +24,7 @@ from BeingH.model.layers import InternVLConnector
 from BeingH.model.llm.qwen2 import Qwen2Tokenizer
 from BeingH.model.vit_model.internvit_navit import InternVisionConfig, InternVisionModel
 from BeingH.utils.schema import DatasetMetadata, EmbodimentTag
+from BeingH.utils.constants import EMBODIMENT_TAG_MAPPING
  
 # Register custom config
 AutoConfig.register("beingh", BeingHConfig)
@@ -67,7 +68,9 @@ def unsqueeze_dict_values(data: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(v, np.ndarray):
             unsqueezed_data[k] = np.expand_dims(v, axis=0)
         elif isinstance(v, list):
-            unsqueezed_data[k] = np.array(v)
+            unsqueezed_data[k] = v
+        elif isinstance(v, str):
+            unsqueezed_data[k] = [v]
         elif isinstance(v, torch.Tensor):
             unsqueezed_data[k] = v.unsqueeze(0)
         else:
@@ -196,6 +199,8 @@ class BeingHPolicy(BasePolicy):
         self.enable_rtc = enable_rtc
 
         self.embodiment_tag = EmbodimentTag(embodiment_tag)
+        default_embodiment_id = EMBODIMENT_TAG_MAPPING[EmbodimentTag.NEW_EMBODIMENT.value]
+        self.embodiment_id = EMBODIMENT_TAG_MAPPING.get(self.embodiment_tag.value, default_embodiment_id)
 
         # ===========================
         # Set data config
@@ -714,6 +719,10 @@ class BeingHPolicy(BasePolicy):
 
     def _prepare_packed_inputs(self, processed_obs: Dict[str, Any], instructions: List[str]) -> Dict[str, Any]:
         """Prepare packed inputs for model."""
+        if isinstance(instructions, str):
+            instructions = [instructions]
+        elif isinstance(instructions, np.ndarray):
+            instructions = instructions.tolist()
         first_state_key = next((k for k in processed_obs if k.startswith('state.')), None)
         N, _ = processed_obs[first_state_key].shape
         
@@ -875,7 +884,7 @@ class BeingHPolicy(BasePolicy):
             "packed_action_indexes": torch.tensor(packed_action_indexes, dtype=torch.long),
             "padded_state": state_tensor.to(dtype=torch.bfloat16),
             "packed_state_indexes": torch.tensor(packed_state_indexes, dtype=torch.long),
-            "embodiment_ids": torch.tensor([31], dtype=torch.long),
+            "embodiment_ids": torch.tensor([self.embodiment_id], dtype=torch.long),
         }
 
     def _check_is_batched(self, obs: Dict[str, Any]) -> bool:

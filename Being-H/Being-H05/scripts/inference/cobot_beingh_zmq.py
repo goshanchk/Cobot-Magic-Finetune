@@ -28,6 +28,7 @@ import traceback
 from typing import Any
 
 import numpy as np
+import torch
 import zmq
 from PIL import Image
 
@@ -78,6 +79,10 @@ def _as_chunk(values: Any, name: str, dim: int = ARM_DIM) -> np.ndarray:
 class CobotBeingHZMQServer:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
         self.policy = BeingHPolicy(
             model_path=args.model_path,
             data_config_name=args.data_config_name,
@@ -158,6 +163,15 @@ class CobotBeingHZMQServer:
         actions = np.concatenate([left_actions[:num_steps], right_actions[:num_steps]], axis=1)
         self._validate_targets(actions, current_qpos)
 
+        if self.args.log_actions:
+            delta = actions - current_qpos[None, :]
+            logging.info(
+                "actions shape=%s max_abs_delta=%.4f first_delta=%s",
+                actions.shape,
+                float(np.abs(delta).max()),
+                np.array2string(delta[0], precision=4, suppress_small=True),
+            )
+
         reply: dict[str, Any] = {"actions": actions.astype(float).tolist()}
         if self.args.return_debug:
             left_delta = result.get("action_delta.left_arm_joint_position")
@@ -209,6 +223,8 @@ def parse_args() -> argparse.Namespace:
         help="Optional safety guard in joint units. 0 disables the guard.",
     )
     parser.add_argument("--return_debug", action="store_true")
+    parser.add_argument("--log_actions", action="store_true")
+    parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
 
