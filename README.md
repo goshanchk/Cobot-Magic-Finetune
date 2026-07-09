@@ -8,7 +8,7 @@ Current training uses only the 14D bimanual joint state/action (`all_arms`).
 
 ```text
 openvla-oft/       # OpenVLA-OFT integration: LeRobot loader, FSDP/DDP launch commands, TensorBoard logs
-Isaac-GR00T/       # Isaac-GR00T integration: Cobot Magic modality config, DeepSpeed launch commands, TensorBoard logs
+Isaac-GR00T/       # Isaac-GR00T integration: Cobot Magic modality config, DeepSpeed launch commands, 
 lerobot/           # LeRobot SmolVLA integration
 Being-H/           # Being-H05 integration: Cobot Magic modality config, FSDP launch commands
 dataset_description.txt

@@ -127,3 +127,6 @@ class PeftConfig:
     # If None, the PEFT library defaults to alpha=8, which may dampen high-rank adapters.
     # Common values are r (alpha == rank) or 2*r.
     lora_alpha: int | None = None
+
+    # Dropout applied inside LoRA adapters.
+    lora_dropout: float = 0.0

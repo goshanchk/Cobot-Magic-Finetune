@@ -44,6 +44,11 @@ class Gr00tN1d7Config(PretrainedConfig):
     backbone_embedding_dim: int = 2048  # project_to_dim; must match Cosmos-Reason2-2B hidden size
     tune_llm: bool = False
     tune_visual: bool = False
+    use_lora: bool = False
+    lora_rank: int = 8
+    lora_alpha: int = 16
+    lora_dropout: float = 0.05
+    lora_target_modules: tuple[str, ...] = ("q_proj", "k_proj", "v_proj", "o_proj")
     select_layer: int = 12
     reproject_vision: bool = False
     use_flash_attention: bool = True

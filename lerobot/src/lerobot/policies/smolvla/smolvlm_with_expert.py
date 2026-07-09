@@ -185,7 +185,7 @@ class SmolVLMWithExpertModel(nn.Module):
         if self.freeze_vision_encoder:
             self.get_vlm_model().vision_model.eval()
 
-        if self.train_expert_only:
+        if self.train_expert_only and not any(param.requires_grad for param in self.vlm.parameters()):
             self.vlm.eval()
 
     def embed_image(self, image: torch.Tensor):

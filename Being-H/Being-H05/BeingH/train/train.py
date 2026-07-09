@@ -34,6 +34,7 @@ from torch.distributed.fsdp import (
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from transformers import HfArgumentParser, TrainingArguments, set_seed
+from peft import LoraConfig, inject_adapter_in_model
 from transformers.optimization import (
     get_cosine_with_min_lr_schedule_with_warmup,
     get_constant_schedule_with_warmup,
@@ -206,6 +207,28 @@ class ModelArguments:
     action_loss_late_chunk_weight: float = field(
         default=1.0,
         metadata={"help": "Multiplier for action timesteps >= action_loss_late_chunk_start."}
+    )
+
+    # VLM LoRA adaptation
+    use_lora: bool = field(
+        default=False,
+        metadata={"help": "Attach LoRA adapters to VLM language-model attention projections."}
+    )
+    lora_rank: int = field(
+        default=8,
+        metadata={"help": "LoRA rank for VLM attention adapters."}
+    )
+    lora_alpha: int = field(
+        default=16,
+        metadata={"help": "LoRA alpha scaling for VLM attention adapters."}
+    )
+    lora_dropout: float = field(
+        default=0.05,
+        metadata={"help": "Dropout used inside VLM LoRA adapters."}
+    )
+    lora_target_modules: tuple[str, ...] = field(
+        default=("q_proj", "k_proj", "v_proj", "o_proj"),
+        metadata={"help": "Attention projection module names targeted by VLM LoRA."}
     )
 
 
@@ -455,6 +478,27 @@ def resolve_checkpoint_path(training_args: TrainingArguments, logger: logging.Lo
     return resume_from, resume_model_only
 
 
+def apply_language_lora(model: BeingH, model_args: ModelArguments, logger: logging.Logger):
+    """Attach LoRA adapters to the VLM language backbone while preserving the custom forward."""
+    if not model_args.use_lora:
+        return
+
+    lora_config = LoraConfig(
+        r=model_args.lora_rank,
+        lora_alpha=model_args.lora_alpha,
+        target_modules=list(model_args.lora_target_modules),
+        lora_dropout=model_args.lora_dropout,
+        bias="none",
+        task_type="FEATURE_EXTRACTION",
+    )
+    model.language_model = inject_adapter_in_model(lora_config, model.language_model)
+    logger.info(
+        "Enabled LoRA on VLM language_model attention modules: "
+        f"rank={model_args.lora_rank}, alpha={model_args.lora_alpha}, "
+        f"dropout={model_args.lora_dropout}, targets={model_args.lora_target_modules}"
+    )
+
+
 def apply_model_freezing(
     model: BeingH,
     training_args: TrainingArguments,
@@ -466,14 +510,29 @@ def apply_model_freezing(
 
     # Freeze multimodal LLM (keep only expert/action parameters active)
     if training_args.freeze_mllm:
+        use_lora = bool(getattr(model.config, "use_lora", False))
         for name, param in model.named_parameters():
             if name in mllm_layer_names:
                 param.requires_grad = False
+            if use_lora and ".base_layer." in name:
+                param.requires_grad = False
+            if use_lora and "lora_" in name:
+                param.requires_grad = True
+            # PEFT initializes non-adapter params as frozen. Re-enable action/expert
+            # parameters that are not part of the original MLLM checkpoint.
+            if (
+                use_lora
+                and name.startswith("language_model.")
+                and name not in mllm_layer_names
+                and ".base_layer." not in name
+                and "lora_" not in name
+            ):
+                param.requires_grad = True
             if "connector" in name and training_args.freeze_vit_mlp:
                 param.requires_grad = False
 
         model.vit_model.eval()
-        logger.info("Froze multimodal LLM (except action expert)")
+        logger.info("Froze multimodal LLM (except action expert and LoRA adapters)")
     
     # Freeze language model (optionally unfreeze new token embeddings)
     if training_args.freeze_llm:
@@ -928,11 +987,17 @@ def main():
         action_loss_gripper_weight=model_args.action_loss_gripper_weight,
         action_loss_late_chunk_start=model_args.action_loss_late_chunk_start,
         action_loss_late_chunk_weight=model_args.action_loss_late_chunk_weight,
+        use_lora=model_args.use_lora,
+        lora_rank=model_args.lora_rank,
+        lora_alpha=model_args.lora_alpha,
+        lora_dropout=model_args.lora_dropout,
+        lora_target_modules=list(model_args.lora_target_modules),
     )
     config.llm_config._attn_implementation = 'flash_attention_2'
 
     # Initialize model
     model = BeingH(language_model, vit_model, connector, config)
+    apply_language_lora(model, model_args, logger)
     
     # Setup embeddings
     if num_new_tokens > 0:

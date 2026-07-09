@@ -536,13 +536,21 @@ class SmolVLAPolicy(PreTrainedPolicy):
 
     def _get_default_peft_targets(self) -> dict[str, any]:
         """Return default PEFT target modules for SmolVLA fine-tuning."""
-        common_projections = (
-            "state_proj|action_in_proj|action_out_proj|action_time_mlp_in|action_time_mlp_out"
+        vlm_attention = (
+            r"model\.vlm_with_expert\.vlm\.model\.text_model\.layers\..*"
+            r"\.self_attn\.(q|k|v|o)_proj"
         )
-        target_modules = rf"(model\.vlm_with_expert\.lm_expert\..*\.(q|v)_proj|model\.({common_projections}))"
+        action_stack_modules = [
+            "lm_expert",
+            "state_proj",
+            "action_in_proj",
+            "action_out_proj",
+            "action_time_mlp_in",
+            "action_time_mlp_out",
+        ]
         return {
-            "target_modules": target_modules,
-            "modules_to_save": [],
+            "target_modules": vlm_attention,
+            "modules_to_save": action_stack_modules,
         }
 
     def _validate_peft_config(self, peft_config) -> None:

@@ -1,0 +1,454 @@
+Cobot Magic Fine-Tuning and Benchmark Methodology
+=================================================
+
+Audit date: 2026-07-09.
+
+This document covers only Being-H0.5, SmolVLA, GR00T N1.7, and GreenVLA.
+OpenVLA is intentionally excluded.
+
+The methodology was reconstructed from README files, training scripts, source code,
+training logs, checkpoint configs, and checkpoint metadata. When README commands and
+checkpoint metadata disagree, the checkpoint metadata is treated as the source of
+truth.
+
+
+1. Dataset
+----------
+
+Main dataset:
+/home/dual4090/workspace/apanasevich/cobot_magic_sber
+
+Format: LeRobot v2.1.
+Size: 7341 episodes, 609146 frames, 1858 task descriptions, 15 FPS.
+
+Camera streams:
+- camera_0: right wrist camera;
+- camera_1: left wrist camera;
+- camera_2: high/front camera.
+
+Raw `observation.state` and `action` are 26-dimensional:
+- indices 0:14 contain the joint states for both arms;
+- indices 14:26 contain FK/end-effector xyz/rpy values.
+
+For VLA fine-tuning, the models used the joint-only 14D part of the state/action
+space. In the dataset, `action[t]` semantically corresponds to
+`observation.state[t + 1]`, with the final frame patched by repeating the final
+available state. Most fine-tuning runs converted actions into relative joint deltas
+with respect to the current state.
+
+Dataset QA:
+- OK episodes: 7338;
+- excluded short episodes: 1609, 4221, 5650.
+
+
+2. Audited Checkpoints
+----------------------
+
+Being-H0.5:
+/home/dual4090/workspace/apanasevich/checkpoints/0050000_being-h0.5
+
+SmolVLA:
+/home/dual4090/workspace/apanasevich/checkpoints/cobot_magic_smolvla_35k/035000
+
+GR00T N1.7:
+/home/dual4090/workspace/apanasevich/checkpoints/gr00t_checkpoint-35000_v2
+
+GreenVLA:
+/home/dual4090/workspace/apanasevich/checkpoints/GreenVLA.QW3VL4b_R0_aloha_fsdp_2026-04-24_07-48/010000
+
+Parameter counts were computed from safetensors headers:
+- Being-H0.5: 2,807,651,528 parameters;
+- SmolVLA: 450,046,176 parameters;
+- GR00T N1.7: 3,455,180,928 parameters;
+- GreenVLA: 4,687,108,280 parameters.
+
+
+3. Being-H0.5
+-------------
+
+Code and commands:
+- /home/dual4090/workspace/cobot_magic_finetune/Being-H/Being-H05/scripts/train/train_cobot_magic_sber_2gpu.sh
+- /home/dual4090/workspace/cobot_magic_finetune/Being-H/Being-H05/configs/posttrain/cobot_magic/cobot_magic_sber.yaml
+- /home/dual4090/workspace/cobot_magic_finetune/Being-H/Being-H05/configs/data_config.py
+- /home/dual4090/workspace/cobot_magic_finetune/Being-H/Being-H05/BeingH/train/train.py
+
+Training hardware:
+- Being-H0.5 was trained on 8x NVIDIA H100 GPUs.
+
+Training setup:
+- max_steps: 50000;
+- checkpoint step: 50000;
+- save_steps: 5000;
+- learning_rate: 1e-4;
+- weight_decay: 1e-5;
+- warmup_ratio: 0.05;
+- gradient_accumulation_steps: 1;
+- DataLoader batch_size: 1 per process, followed by token packing;
+- max_num_tokens: 8704;
+- expected_num_tokens: 8192.
+
+Model:
+- VLM/base model: InternVL3_5-2B;
+- action expert/init: Qwen3-0.6B / Being-H05-2B resume;
+- total parameters: 2.807B;
+- trainable parameters from stdout log: 473.62M, about 16.87%.
+
+What was trained:
+- `freeze_mllm=True` froze the multimodal LLM/backbone layers;
+- `freeze_vit=False` and `freeze_llm=False` were not used as additional full freezes;
+- `freeze_vit_mlp=False` kept the vision connector/projector trainable;
+- the action expert, action head, flow-matching/action modules, and connector/projector
+  were trained;
+- the VLM/backbone was mostly frozen.
+
+Action/model settings:
+- action_chunk_length: 24;
+- action_token_num: 24;
+- gen_action_type: prop_hidden;
+- use_expert: True;
+- use_flow_matching: True;
+- attn_mode: causal;
+- force_image_size: 224;
+- downsample_ratio: 0.5;
+- cameras were mapped as cam_high=camera_2, cam_left_wrist=camera_1,
+  cam_right_wrist=camera_0;
+- state/action values were mapped into unified action-space slots:
+  right arm 50:57, left arm 57:64;
+- actions were trained as relative deltas.
+
+Loss details:
+- base action loss: L1 / flow-matching action loss;
+- gripper-like unified indices: 56 and 63;
+- action_loss_gripper_weight: 4.0;
+- action_loss_late_chunk_start: 10;
+- action_loss_late_chunk_weight: 2.0.
+
+Additional settings:
+- MPG enabled: use_mpg=True, mpg_lambda=0.1, mpg_num_projections=32,
+  mpg_refinement_iters=1, mpg_gate_temperature=1.0;
+- training-time RTC/delay simulation disabled.
+
+
+4. SmolVLA
+----------
+
+Code and commands:
+- /home/dual4090/workspace/cobot_magic_finetune/lerobot
+- SmolVLA policy code:
+  /home/dual4090/workspace/cobot_magic_finetune/lerobot/src/lerobot/policies/smolvla
+- checkpoint config:
+  /home/dual4090/workspace/apanasevich/checkpoints/cobot_magic_smolvla_35k/035000/pretrained_model/train_config.json
+
+Important discrepancy:
+The README/project command also describes an expert-only run with
+`freeze_vision_encoder=true` and `train_expert_only=true`. However, the audited
+checkpoint `035000` stores a config for `cobot_magic_smolvla_2gpu_full_unfrozen_state14_50k`,
+where:
+- freeze_vision_encoder=False;
+- train_expert_only=False;
+- train_state_proj=True.
+
+Therefore, this checkpoint is documented as a full/unfrozen 14D fine-tune, not as
+an expert-only fine-tune.
+
+Training hardware:
+- SmolVLA was trained on 2x NVIDIA RTX 4090 GPUs.
+
+Training setup from checkpoint config:
+- pretrained policy: lerobot/smolvla_base;
+- VLM: HuggingFaceTB/SmolVLM2-500M-Video-Instruct;
+- load_vlm_weights: True;
+- dataset root: /home/dual4090/workspace/apanasevich/cobot_magic_sber_v3_0;
+- checkpoint step: 35000;
+- target steps in config: 50000;
+- per-device batch_size: 8;
+- effective batch size: about 16 across 2 GPUs;
+- optimizer: AdamW;
+- learning_rate: 5e-5;
+- betas: [0.9, 0.95];
+- weight_decay: 1e-10;
+- grad_clip_norm: 10;
+- scheduler: cosine decay;
+- warmup_steps: 1000;
+- decay_steps: 50000;
+- decay_lr: 2.5e-6;
+- use_peft: False.
+
+Model:
+- total parameters: 450,046,176;
+- the exact trainable-parameter count for checkpoint `035000` is not saved in the
+  checkpoint metadata;
+- according to the code, with `train_expert_only=False` the full VLM is not frozen;
+- the code still freezes `lm_head`, `text_model.model.norm.weight`, selected final
+  VLM layers to avoid distributed unused-parameter issues, and the action expert
+  `lm_head`;
+- the state projection is trainable because `train_state_proj=True`.
+
+Data representation:
+- 14D joint-only representation;
+- dataset.joint_only_dim=14;
+- relative_joint_actions=True;
+- state/action dimension: 14;
+- camera rename for LeRobot v3.0: camera_0 -> camera1, camera_1 -> camera2,
+  camera_2 -> camera3;
+- normalization: STATE=MEAN_STD, ACTION=MEAN_STD, VISUAL=IDENTITY;
+- representation: relative_chunk_action_and_absolute_state.
+
+Action/model settings:
+- chunk_size: 24;
+- n_action_steps: 24;
+- state_noise_std: 0.05;
+- state_dropout_prob: 0.10;
+- attention_mode: cross_attn;
+- num_vlm_layers: 16;
+- num_expert_layers: 0;
+- expert_width_multiplier: 0.75;
+- image resize/pad in policy config: 512x512.
+
+Loss details:
+- gripper loss weight: 4.0;
+- late chunk start: 10;
+- late chunk weight: 2.0.
+
+Augmentations from the README command:
+- image transforms enabled, with up to 3 random transforms;
+- brightness [0.8, 1.2], contrast [0.8, 1.2], saturation [0.5, 1.5],
+  hue [-0.05, 0.05], sharpness [0.5, 1.5];
+- random affine degrees [-5, 5], translate [0.05, 0.05].
+
+
+5. GR00T N1.7
+-------------
+
+Code and commands:
+- /home/dual4090/workspace/cobot_magic_finetune/Isaac-GR00T
+- checkpoint experiment config:
+  /home/dual4090/workspace/apanasevich/checkpoints/gr00t_checkpoint-35000_v2/experiment_cfg/config.yaml
+
+Training hardware:
+- GR00T N1.7 was trained on 8x NVIDIA H100 GPUs.
+
+Training setup from checkpoint config:
+- base_model_path/start_from_checkpoint: nvidia/GR00T-N1.7-3B;
+- model_name/backbone in config: nvidia/Cosmos-Reason2-2B;
+- max_steps: 35000;
+- checkpoint step: 35000;
+- num_gpus: 8;
+- global_batch_size: 128;
+- per-device train_batch_size in trainer_state: 16;
+- gradient_accumulation_steps: 1;
+- learning_rate: 5e-5;
+- scheduler: cosine;
+- warmup_ratio: 0.05;
+- weight_decay: 1e-5;
+- max_grad_norm: 1.0;
+- precision: bf16, tf32 enabled;
+- deepspeed_stage: 2;
+- save_steps: 1000;
+- save_total_limit: 5;
+- eval_strategy: no.
+
+Model:
+- total parameters: 3,455,180,928;
+- the exact trainable-parameter count was not found in the checkpoint metadata;
+- config and code show: tune_llm=False, tune_visual=False, tune_projector=True,
+  tune_diffusion_model=True, tune_vlln=True.
+
+What was trained:
+- the LLM backbone and visual encoder were frozen;
+- the action/projector components were trained: state_encoder, action_encoder,
+  action_decoder, diffusion/action model, VLLN, and visual-language self-attention
+  action-head blocks.
+
+Data:
+- dataset path in config: /mnt/datasets/R0_v2/cobot_magic_sber;
+- LeRobot dataset modalities: cam_high, cam_left_wrist, cam_right_wrist;
+- state: all_arms;
+- action: all_arms;
+- action horizon: 24;
+- action representation: RELATIVE;
+- max_state_dim: 132;
+- max_action_dim: 132;
+- state_history_length: 1;
+- use_relative_action=True.
+
+Sampling/split:
+- episode_sampling_rate: 0.1;
+- shard_size: 1024;
+- num_shards_per_epoch: 100000;
+- exclude_validation_episodes=True;
+- validation_split_path: meta/validation_episodes.json;
+- validation_episodes_target: 300;
+- split_seed: 42;
+- seed: 42.
+
+Regularization/augmentation:
+- state_dropout_prob: 0.2;
+- random_rotation_angle: 5;
+- albumentations transforms enabled;
+- color jitter: brightness 0.3, contrast 0.4, saturation 0.5, hue 0.08.
+
+Action loss:
+- action_loss_gripper_weight: 4.0;
+- action_loss_late_chunk_start: 10;
+- action_loss_late_chunk_weight: 2.0.
+
+
+6. GreenVLA
+-----------
+
+GreenVLA was not trained locally in this project. It was taken as a ready checkpoint.
+Therefore, the methodology below is reconstructed only from checkpoint metadata.
+
+Checkpoint:
+/home/dual4090/workspace/apanasevich/checkpoints/GreenVLA.QW3VL4b_R0_aloha_fsdp_2026-04-24_07-48/010000
+
+Metadata:
+- task_name: GreenVLA.QW3VL4b_R0_aloha_fsdp_2026-04-24_07-48;
+- step: 10000;
+- dataset_config: aloha_fisheye;
+- val_loss: 0.35045154076069596;
+- train_loss in s3 metadata: 0.0;
+- model_total_params: 4,687,108,280;
+- model_learnable_params: 4,687,108,280.
+
+Model:
+- type/model_type: qwen3vlpolicy;
+- base_vlm_model: 229nagibator229/Qwen3-VL-4B-Instruct-action;
+- precision: bfloat16;
+- model_mode: flow_matching;
+- inference_mode: flow_matching;
+- freeze_vlm: False;
+- freeze_vision_encoder: False;
+- attention implementation: sdpa;
+- tokenizer_max_length: 645;
+- proj_width: 1280;
+- expert_block_stride: 4;
+- enable_learnable_layer_combination: True;
+- is_knowledge_insulation: True;
+- ce_loss_weight: 0.5.
+
+Input/action settings:
+- image_keys: base_0_rgb, left_wrist_0_rgb, right_wrist_0_rgb;
+- image_shape: 448x448;
+- n_obs_steps: 1;
+- n_action_steps: 10;
+- num_steps: 10;
+- max_state_dim: 48;
+- max_action_dim: 48;
+- normalization_mode: mean_std;
+- map_to_unified_space: False;
+- unified_space_dim: 64;
+- add_action_space_factorization: True;
+- add_state_proj_to_action_expert: True;
+- state_noise_amplitude: 0.1;
+- state_dropout_prob: 0.5;
+- action_head_batch_multiplier: 4.
+
+Interpretation:
+- metadata indicates a full fine-tune mode: the VLM and vision encoder are not frozen,
+  and learnable parameters equal total parameters;
+- GreenVLA uses a shorter action horizon than Being-H0.5, SmolVLA, and GR00T:
+  10 steps instead of 24.
+
+
+7. Benchmark
+------------
+
+Result directory:
+/home/dual4090/workspace/apanasevich/benchmark_results_summer2026
+
+Aggregation/plotting script:
+/home/dual4090/workspace/apanasevich/benchmark_aloha/realworld_exp/plot_results.py
+
+Benchmark files:
+- 4 models: Being-H05, SmolVLA, GrootN1.7, GreenVLA;
+- 2 task families: objects and colors;
+- 2 hands: left_hand and right_hand;
+- 16 JSON result files in total.
+
+Each JSON file contains:
+- experiment_name;
+- policy_name;
+- task_config_path;
+- seed: 20260429;
+- num_sequences: 5;
+- num_tasks: 5;
+- total_trials: 25;
+- trial_plan;
+- trials with the fields `instruction_understood` and `task_success`.
+
+Protocol:
+- each model x task_family x hand combination was evaluated on 25 trials;
+- 25 trials = 5 sequences x 5 tasks;
+- `source_num_attempts` in the JSON is ignored; the benchmark uses the saved
+  `trial_plan` from the task config;
+- aggregation counts only trials that contain both `instruction_understood` and
+  `task_success`;
+- metrics:
+  1. Instruction understanding = fraction of trials with `instruction_understood=True`;
+  2. Task success = fraction of trials with `task_success=True`.
+
+Objects tasks:
+- pliers;
+- sponge;
+- screwdriver;
+- battery;
+- tape.
+
+Colors tasks:
+- white object;
+- yellow object;
+- blue object;
+- green object;
+- red object.
+
+All instructions followed the template "Pick up ... and place it in the plastic
+container with the left/right hand". The benchmark therefore measured both language
+grounding for object/color selection and successful pick-and-place execution with
+the requested arm.
+
+Generated plots:
+- results/4models_averaged_hands.svg: left/right hands averaged by task family;
+- results/4models_left_hand.svg: left hand only;
+- results/4models_right_hand.svg: right hand only.
+
+Summary by category, left/right hands aggregated:
+
+Objects:
+- Being-H05: instruction_understood 42/50 = 84.0%, task_success 30/50 = 60.0%;
+- GreenVLA: instruction_understood 48/50 = 96.0%, task_success 45/50 = 90.0%;
+- GrootN1.7: instruction_understood 47/50 = 94.0%, task_success 37/50 = 74.0%;
+- SmolVLA: instruction_understood 26/50 = 52.0%, task_success 16/50 = 32.0%.
+
+Colors:
+- Being-H05: instruction_understood 37/50 = 74.0%, task_success 30/50 = 60.0%;
+- GreenVLA: instruction_understood 50/50 = 100.0%, task_success 49/50 = 98.0%;
+- GrootN1.7: instruction_understood 44/50 = 88.0%, task_success 35/50 = 70.0%;
+- SmolVLA: instruction_understood 24/50 = 48.0%, task_success 13/50 = 26.0%.
+
+Summary by hand:
+
+Objects, left hand:
+- Being-H05: instruction_understood 22/25 = 88.0%, task_success 15/25 = 60.0%;
+- GreenVLA: instruction_understood 24/25 = 96.0%, task_success 21/25 = 84.0%;
+- GrootN1.7: instruction_understood 24/25 = 96.0%, task_success 19/25 = 76.0%;
+- SmolVLA: instruction_understood 12/25 = 48.0%, task_success 8/25 = 32.0%.
+
+Objects, right hand:
+- Being-H05: instruction_understood 20/25 = 80.0%, task_success 15/25 = 60.0%;
+- GreenVLA: instruction_understood 24/25 = 96.0%, task_success 24/25 = 96.0%;
+- GrootN1.7: instruction_understood 23/25 = 92.0%, task_success 18/25 = 72.0%;
+- SmolVLA: instruction_understood 14/25 = 56.0%, task_success 8/25 = 32.0%.
+
+Colors, left hand:
+- Being-H05: instruction_understood 18/25 = 72.0%, task_success 15/25 = 60.0%;
+- GreenVLA: instruction_understood 25/25 = 100.0%, task_success 25/25 = 100.0%;
+- GrootN1.7: instruction_understood 22/25 = 88.0%, task_success 17/25 = 68.0%;
+- SmolVLA: instruction_understood 13/25 = 52.0%, task_success 8/25 = 32.0%.
+
+Colors, right hand:
+- Being-H05: instruction_understood 19/25 = 76.0%, task_success 15/25 = 60.0%;
+- GreenVLA: instruction_understood 25/25 = 100.0%, task_success 24/25 = 96.0%;
+- GrootN1.7: instruction_understood 22/25 = 88.0%, task_success 18/25 = 72.0%;
+- SmolVLA: instruction_understood 11/25 = 44.0%, task_success 5/25 = 20.0%.

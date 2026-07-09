@@ -15,6 +15,7 @@
 
 import logging
 
+from peft import LoraConfig, get_peft_model
 import torch
 from transformers.feature_extraction_utils import BatchFeature
 
@@ -36,6 +37,11 @@ class Qwen3Backbone(torch.nn.Module):
         model_name: str = "nvidia/Cosmos-Reason2-2B",
         tune_llm: bool = False,
         tune_visual: bool = False,
+        use_lora: bool = False,
+        lora_rank: int = 8,
+        lora_alpha: int = 16,
+        lora_dropout: float = 0.05,
+        lora_target_modules: tuple[str, ...] = ("q_proj", "k_proj", "v_proj", "o_proj"),
         select_layer: int = -1,
         reproject_vision: bool = True,
         use_flash_attention: bool = False,
@@ -51,6 +57,7 @@ class Qwen3Backbone(torch.nn.Module):
             model_name: nvidia/Cosmos-Reason2-2B
             tune_llm: whether to tune the LLM model (default: False)
             tune_visual: whether to tune the visual model (default: False)
+            use_lora: whether to train LoRA adapters on language-model attention projections.
         """
         if not _QWEN3VL_AVAILABLE:
             raise ImportError(
@@ -88,13 +95,36 @@ class Qwen3Backbone(torch.nn.Module):
             self.model.language_model.layers.pop(-1)
 
         self.select_layer = select_layer
+        self.use_lora = use_lora
+        self.lora_rank = lora_rank
+        self.lora_alpha = lora_alpha
+        self.lora_dropout = lora_dropout
+        self.lora_target_modules = tuple(lora_target_modules)
         self.set_trainable_parameters(tune_llm, tune_visual, tune_top_llm_layers)
+        if self.use_lora:
+            self._apply_language_lora()
         if load_bf16 and trainable_params_fp32:
             # cast trainable parameters to fp32
             for n, p in self.named_parameters():
                 if p.requires_grad:
                     p.data = p.data.to(torch.float32)
                     logger.debug(f"Casting trainable parameter {n} to fp32")
+
+    def _apply_language_lora(self):
+        lora_config = LoraConfig(
+            r=self.lora_rank,
+            lora_alpha=self.lora_alpha,
+            target_modules=list(self.lora_target_modules),
+            lora_dropout=self.lora_dropout,
+            bias="none",
+            task_type="FEATURE_EXTRACTION",
+        )
+        self.model.language_model = get_peft_model(self.model.language_model, lora_config)
+        logger.info(
+            "Enabled LoRA on VLM language_model attention modules: "
+            f"rank={self.lora_rank}, alpha={self.lora_alpha}, "
+            f"dropout={self.lora_dropout}, targets={self.lora_target_modules}"
+        )
 
     def set_trainable_parameters(self, tune_llm: bool, tune_visual: bool, tune_top_llm_layers: int):
         self.tune_llm = tune_llm
@@ -127,7 +157,7 @@ class Qwen3Backbone(torch.nn.Module):
         need to call model.eval() for the frozen modules.
         """
         if self.training:
-            if self.model.language_model and not self.tune_llm:
+            if self.model.language_model and not self.tune_llm and not self.use_lora:
                 self.model.language_model.eval()
             if self.model.visual and not self.tune_visual:
                 self.model.visual.eval()

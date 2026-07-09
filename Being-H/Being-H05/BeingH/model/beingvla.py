@@ -86,6 +86,11 @@ class BeingHConfig(PretrainedConfig):
             action_loss_late_chunk_weight=1.0,
 
             attn_mode="causal",
+            use_lora=False,
+            lora_rank=8,
+            lora_alpha=16,
+            lora_dropout=0.05,
+            lora_target_modules=("q_proj", "k_proj", "v_proj", "o_proj"),
             **kwargs):
         super().__init__(**kwargs)
 
@@ -121,6 +126,11 @@ class BeingHConfig(PretrainedConfig):
         self.use_expert = use_expert
         self.use_flow_matching = use_flow_matching
         self.attn_mode = attn_mode
+        self.use_lora = kwargs.get('use_lora', use_lora)
+        self.lora_rank = kwargs.get('lora_rank', lora_rank)
+        self.lora_alpha = kwargs.get('lora_alpha', lora_alpha)
+        self.lora_dropout = kwargs.get('lora_dropout', lora_dropout)
+        self.lora_target_modules = kwargs.get('lora_target_modules', list(lora_target_modules))
 
         self.max_num_embodiments = 32
         self.noise_beta_alpha = 1.5

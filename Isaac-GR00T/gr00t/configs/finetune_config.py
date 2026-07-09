@@ -51,6 +51,21 @@ class FinetuneConfig:
     tune_visual: bool = False
     """If True, fine-tune the visual encoder (e.g., ViT or CNN backbone)."""
 
+    use_lora: bool = False
+    """If True, attach LoRA adapters to the VLM language-model attention projections."""
+
+    lora_rank: int = 8
+    """LoRA rank for VLM attention adapters."""
+
+    lora_alpha: int = 16
+    """LoRA alpha scaling for VLM attention adapters."""
+
+    lora_dropout: float = 0.05
+    """Dropout used inside VLM LoRA adapters."""
+
+    lora_target_modules: tuple[str, ...] = ("q_proj", "k_proj", "v_proj", "o_proj")
+    """Attention projection module names targeted by VLM LoRA."""
+
     tune_projector: bool = True
     """If True, fine-tune the multimodal projector layers that map vision/language features to a shared space."""
 
