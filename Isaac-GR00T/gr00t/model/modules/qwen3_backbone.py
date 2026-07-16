@@ -15,7 +15,7 @@
 
 import logging
 
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, inject_adapter_in_model
 import torch
 from transformers.feature_extraction_utils import BatchFeature
 
@@ -119,7 +119,7 @@ class Qwen3Backbone(torch.nn.Module):
             bias="none",
             task_type="FEATURE_EXTRACTION",
         )
-        self.model.language_model = get_peft_model(self.model.language_model, lora_config)
+        self.model.language_model = inject_adapter_in_model(lora_config, self.model.language_model)
         logger.info(
             "Enabled LoRA on VLM language_model attention modules: "
             f"rank={self.lora_rank}, alpha={self.lora_alpha}, "
