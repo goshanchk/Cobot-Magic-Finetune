@@ -57,6 +57,37 @@ def load_safetensors(path):
     return state_dict
 
 
+def _state_dict_contains_lora(state_dict: Dict[str, torch.Tensor]) -> bool:
+    return any("lora_" in key for key in state_dict)
+
+
+def _inject_language_lora(model: BeingH, config: BeingHConfig):
+    try:
+        from peft import LoraConfig
+        from peft.tuners.lora import LoraModel
+    except ImportError as exc:
+        raise ImportError(
+            "This Being-H checkpoint contains LoRA weights, but `peft` is not installed."
+        ) from exc
+
+    lora_config = LoraConfig(
+        r=int(config.lora_rank),
+        lora_alpha=int(config.lora_alpha),
+        target_modules=list(config.lora_target_modules),
+        lora_dropout=float(config.lora_dropout),
+        bias="none",
+        task_type="FEATURE_EXTRACTION",
+    )
+    tuner = LoraModel(model.language_model, lora_config, adapter_name="default")
+    model.language_model = tuner.model
+    return tuner
+
+
+def _merge_language_lora(model: BeingH, tuner) -> None:
+    model.language_model = tuner.merge_and_unload(safe_merge=True)
+    model.config.use_lora = False
+
+
 # Helper functions
 def unsqueeze_dict_values(data: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -228,6 +259,16 @@ class BeingHPolicy(BasePolicy):
         print(f"\n=== Loading model from {self.model_path} ===")
 
         config = BeingHConfig.from_pretrained(self.model_path)
+        print("Loading state dict...")
+        state_dict = load_safetensors(self.model_path)
+        has_lora_weights = _state_dict_contains_lora(state_dict)
+        configured_use_lora = bool(getattr(config, "use_lora", False))
+        if configured_use_lora != has_lora_weights:
+            config.use_lora = has_lora_weights
+            if configured_use_lora:
+                print("Being-H checkpoint has merged/plain weights; skipping LoRA injection")
+            else:
+                print("Being-H checkpoint contains LoRA tensors; enabling adapter reconstruction")
 
         llm_version = self._detect_llm_version(config.llm_config)
         print(f"Detected LLM version: {llm_version}")
@@ -267,10 +308,11 @@ class BeingHPolicy(BasePolicy):
         # Assemble model
         self.model = BeingH(language_model, vit_model, connector, config)
 
-        # Load weights
-        print("Loading state dict...")
-        state_dict = load_safetensors(self.model_path)
+        lora_tuner = _inject_language_lora(self.model, config) if has_lora_weights else None
         self.model.load_state_dict(state_dict, strict=True)
+        if lora_tuner is not None:
+            print("Merging Being-H LoRA weights before inference")
+            _merge_language_lora(self.model, lora_tuner)
         self.model.to(self.device, dtype=torch.bfloat16)
         self.model.eval()
 

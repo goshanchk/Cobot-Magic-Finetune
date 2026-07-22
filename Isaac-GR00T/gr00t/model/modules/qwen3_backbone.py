@@ -15,7 +15,8 @@
 
 import logging
 
-from peft import LoraConfig, inject_adapter_in_model
+from peft import LoraConfig
+from peft.tuners.lora import LoraModel
 import torch
 from transformers.feature_extraction_utils import BatchFeature
 
@@ -119,12 +120,26 @@ class Qwen3Backbone(torch.nn.Module):
             bias="none",
             task_type="FEATURE_EXTRACTION",
         )
-        self.model.language_model = inject_adapter_in_model(lora_config, self.model.language_model)
+        # Keep the tuner as a non-registered reference so inference can merge
+        # the injected layers after loading, without duplicating state-dict keys.
+        tuner = LoraModel(self.model.language_model, lora_config, adapter_name="default")
+        self.model.language_model = tuner.model
+        object.__setattr__(self, "_language_lora_tuner", tuner)
         logger.info(
             "Enabled LoRA on VLM language_model attention modules: "
             f"rank={self.lora_rank}, alpha={self.lora_alpha}, "
             f"dropout={self.lora_dropout}, targets={self.lora_target_modules}"
         )
+
+    def merge_language_lora(self) -> bool:
+        """Merge injected language LoRA layers and remove their wrappers."""
+        tuner = getattr(self, "_language_lora_tuner", None)
+        if tuner is None:
+            return False
+        self.model.language_model = tuner.merge_and_unload(safe_merge=True)
+        object.__setattr__(self, "_language_lora_tuner", None)
+        self.use_lora = False
+        return True
 
     def set_trainable_parameters(self, tune_llm: bool, tune_visual: bool, tune_top_llm_layers: int):
         self.tune_llm = tune_llm

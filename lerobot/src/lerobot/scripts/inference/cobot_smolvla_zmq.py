@@ -26,6 +26,7 @@ from safetensors.torch import load_file
 import torch
 import zmq
 
+from lerobot.configs import PreTrainedConfig
 from lerobot.policies import make_pre_post_processors
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 from lerobot.utils.constants import ACTION, OBS_STATE
@@ -36,6 +37,10 @@ CAMERA_FIELD_TO_DATASET_KEY = {
     "images_camera_1": "observation.images.camera_1",  # left wrist
     "images_camera_2": "observation.images.camera_2",  # front/high
 }
+
+FULL_MODEL_FILENAME = "model.safetensors"
+ADAPTER_CONFIG_FILENAME = "adapter_config.json"
+ADAPTER_MODEL_FILENAME = "adapter_model.safetensors"
 
 
 def decode_jpeg_b64(value: str) -> np.ndarray:
@@ -63,6 +68,89 @@ def resolve_pretrained_model_dir(checkpoint_path: str | Path) -> Path:
     if (path / "pretrained_model").is_dir():
         return path / "pretrained_model"
     return path
+
+
+def load_smolvla_policy(
+    model_dir: Path,
+    *,
+    device: str,
+    strict: bool,
+    local_files_only: bool,
+    base_model_path: str | None = None,
+) -> SmolVLAPolicy:
+    """Load either a full SmolVLA checkpoint or a PEFT adapter checkpoint.
+
+    LeRobot saves PEFT checkpoints without ``model.safetensors``. For inference,
+    reconstruct the base policy with the fine-tuned policy config, load the
+    adapter, and merge its LoRA weights into the base model in memory.
+    """
+    full_model_path = model_dir / FULL_MODEL_FILENAME
+    adapter_config_path = model_dir / ADAPTER_CONFIG_FILENAME
+    adapter_model_path = model_dir / ADAPTER_MODEL_FILENAME
+
+    if full_model_path.is_file():
+        policy_config = PreTrainedConfig.from_pretrained(model_dir, local_files_only=True)
+        policy_config.device = device
+        return SmolVLAPolicy.from_pretrained(
+            model_dir,
+            config=policy_config,
+            local_files_only=local_files_only,
+            strict=strict,
+        )
+
+    adapter_files = (adapter_config_path, adapter_model_path)
+    if not all(path.is_file() for path in adapter_files):
+        missing = [path.name for path in adapter_files if not path.is_file()]
+        raise FileNotFoundError(
+            f"Checkpoint {model_dir} contains neither {FULL_MODEL_FILENAME} nor a complete PEFT adapter. "
+            f"Missing adapter files: {', '.join(missing)}"
+        )
+
+    try:
+        from peft import PeftConfig, PeftModel
+    except ImportError as exc:
+        raise ImportError(
+            "This is a LoRA/PEFT checkpoint, but `peft` is not installed. "
+            "Install the SmolVLA extra with `uv pip install -e '.[smolvla]'`."
+        ) from exc
+
+    # The checkpoint's config contains the trained 14D state/action schema and
+    # must override the schema stored in the generic SmolVLA base checkpoint.
+    policy_config = PreTrainedConfig.from_pretrained(
+        model_dir,
+        local_files_only=True,
+    )
+    if policy_config.type != "smolvla":
+        raise ValueError(f"Expected a SmolVLA checkpoint, got policy type {policy_config.type!r}")
+    policy_config.device = device
+
+    peft_config = PeftConfig.from_pretrained(str(model_dir), local_files_only=True)
+    resolved_base_model = base_model_path or peft_config.base_model_name_or_path
+    if not resolved_base_model:
+        raise ValueError(
+            "adapter_config.json does not contain `base_model_name_or_path`. "
+            "Pass the base checkpoint explicitly with --base_model_path."
+        )
+
+    print(f"Loading LoRA base model: {resolved_base_model}")
+    base_policy = SmolVLAPolicy.from_pretrained(
+        resolved_base_model,
+        config=policy_config,
+        local_files_only=local_files_only,
+        strict=strict,
+    )
+    print(f"Loading LoRA adapter: {model_dir}")
+    peft_policy = PeftModel.from_pretrained(
+        base_policy,
+        str(model_dir),
+        config=peft_config,
+        is_trainable=False,
+    )
+    print("Merging LoRA adapter into SmolVLA base model")
+    merged_policy = peft_policy.merge_and_unload(safe_merge=True)
+    merged_policy.to(device)
+    merged_policy.eval()
+    return merged_policy
 
 
 def _camera_tensor_for_feature(feature_key: str, images_by_field: dict[str, torch.Tensor]) -> torch.Tensor:
@@ -98,11 +186,12 @@ class CobotSmolVLAZMQServer:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.model_dir = resolve_pretrained_model_dir(args.checkpoint_path)
-        self.policy = SmolVLAPolicy.from_pretrained(
+        self.policy = load_smolvla_policy(
             self.model_dir,
             device=args.device,
-            local_files_only=args.local_files_only,
             strict=args.strict,
+            local_files_only=args.local_files_only,
+            base_model_path=args.base_model_path,
         )
         self.policy.eval()
         self.policy.reset()
@@ -312,6 +401,14 @@ class CobotSmolVLAZMQServer:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint_path", required=True, help="Path to checkpoint or checkpoint/pretrained_model directory.")
+    parser.add_argument(
+        "--base_model_path",
+        default=None,
+        help=(
+            "Optional local/Hugging Face base SmolVLA checkpoint for a LoRA checkpoint. "
+            "By default it is read from adapter_config.json."
+        ),
+    )
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5055)

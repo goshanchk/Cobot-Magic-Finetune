@@ -20,18 +20,43 @@ This module provides the core policy classes for running Gr00t models:
 - Gr00tSimPolicyWrapper: Wrapper for compatibility with existing Gr00t simulation environments
 """
 
+import json
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
-from transformers import AutoModel, AutoProcessor
+from safetensors import safe_open
+from transformers import AutoConfig, AutoModel, AutoProcessor
 
 from gr00t.data.embodiment_tags import FINETUNE_ONLY_TAGS, POSTTRAIN_TAGS, EmbodimentTag
 from gr00t.data.interfaces import BaseProcessor
 from gr00t.data.types import MessageType, ModalityConfig, VLAStepData
 
 from .policy import BasePolicy, PolicyWrapper
+
+
+def _checkpoint_contains_lora_weights(model_dir: Path) -> bool:
+    """Inspect safetensors metadata without materializing checkpoint tensors."""
+    index_path = model_dir / "model.safetensors.index.json"
+    if index_path.is_file():
+        with index_path.open(encoding="utf-8") as stream:
+            weight_map = json.load(stream).get("weight_map", {})
+        return any("lora_" in key for key in weight_map)
+
+    for model_file in sorted(model_dir.glob("*.safetensors")):
+        with safe_open(model_file, framework="pt", device="cpu") as stream:
+            if any("lora_" in key for key in stream.keys()):
+                return True
+    return False
+
+
+def _merge_language_lora(model):
+    merge_language_lora = getattr(model.backbone, "merge_language_lora", None)
+    if not callable(merge_language_lora) or not merge_language_lora():
+        raise TypeError("GR00T checkpoint contains LoRA weights, but its language model cannot merge them")
+    model.config.use_lora = False
+    return model
 
 
 def _rec_to_dtype(x: Any, dtype: torch.dtype) -> Any:
@@ -96,8 +121,23 @@ class Gr00tPolicy(BasePolicy):
             embodiment_tag = EmbodimentTag.resolve(embodiment_tag)
         model_dir = Path(model_path)
 
-        # Load the pretrained model and move to target device with bfloat16 precision
-        model = AutoModel.from_pretrained(model_dir)
+        # GR00T LoRA training saves a full HF checkpoint whose state dict still
+        # contains injected lora_A/lora_B modules. Match model construction to
+        # the actual weight layout, then merge adapters before the first forward.
+        has_lora_weights = _checkpoint_contains_lora_weights(model_dir)
+        config = AutoConfig.from_pretrained(model_dir)
+        configured_use_lora = bool(getattr(config, "use_lora", False))
+        if configured_use_lora != has_lora_weights:
+            config.use_lora = has_lora_weights
+            if configured_use_lora:
+                print("GR00T checkpoint has merged/plain weights; skipping LoRA injection")
+            else:
+                print("GR00T checkpoint contains LoRA tensors; enabling adapter reconstruction")
+
+        model = AutoModel.from_pretrained(model_dir, config=config)
+        if has_lora_weights:
+            print("Merging GR00T LoRA weights before inference")
+            model = _merge_language_lora(model)
         model.eval()  # Set model to evaluation mode
         model.to(device=device, dtype=torch.bfloat16)
         self.model = model

@@ -240,6 +240,21 @@ CUDA_VISIBLE_DEVICES=0 \
   --port 5055 \
   --max_actions 10
 ```
+
+PEFT/LoRA checkpoints contain `adapter_model.safetensors` instead of
+`model.safetensors`. The inference server detects this layout automatically,
+loads the base checkpoint from `adapter_config.json`, and calls
+`merge_and_unload()` before serving requests. If the base path saved in the
+adapter config is unavailable or you want to use a local copy, pass it explicitly:
+
+```bash
+.venv/bin/python src/lerobot/scripts/inference/cobot_smolvla_zmq.py \
+  --checkpoint_path /path/to/checkpoints/smolvla_lora/050000 \
+  --base_model_path /path/to/smolvla_base \
+  --device cuda:0 \
+  --port 5055
+```
+
 ## Tmux
 
 ```bash

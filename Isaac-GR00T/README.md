@@ -255,3 +255,10 @@ CUDA_VISIBLE_DEVICES=0 \
   --host 0.0.0.0 \
   --port 5055
 ```
+
+GR00T LoRA runs are saved as full Hugging Face checkpoints: the base weights,
+action head, and injected `lora_A`/`lora_B` tensors are stored together in the
+model safetensors files. The inference policy detects these tensor keys,
+reconstructs the adapters, loads the checkpoint, and calls
+`merge_and_unload()` before the first inference request. Plain checkpoints and
+already-merged checkpoints are loaded directly without applying LoRA again.

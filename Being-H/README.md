@@ -195,6 +195,11 @@ python scripts/inference/cobot_beingh_zmq.py \
   --max_abs_step_delta 0.5
 ```
 
+Being-H LoRA runs are also saved as full checkpoints rather than adapter-only
+directories. At inference, the loader checks the state-dict keys. Checkpoints
+with `lora_A`/`lora_B` tensors are reconstructed and merged before the first
+forward pass; plain or already-merged checkpoints bypass the LoRA path.
+
 ## Monitoring
 
 Stdout:
