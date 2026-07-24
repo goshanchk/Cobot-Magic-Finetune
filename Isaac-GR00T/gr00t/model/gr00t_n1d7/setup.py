@@ -83,6 +83,15 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                 self.config.training.start_from_checkpoint,
                 tune_llm=self.config.model.tune_llm,
                 tune_visual=self.config.model.tune_visual,
+                # Load the plain base checkpoint before injecting LoRA. PEFT
+                # wraps Linear layers and changes their state-dict paths, so
+                # enabling it during from_pretrained would make plain base
+                # weights appear missing/unexpected.
+                use_lora=False,
+                lora_rank=self.config.model.lora_rank,
+                lora_alpha=self.config.model.lora_alpha,
+                lora_dropout=self.config.model.lora_dropout,
+                lora_target_modules=self.config.model.lora_target_modules,
                 tune_projector=self.config.model.tune_projector,
                 tune_diffusion_model=self.config.model.tune_diffusion_model,
                 tune_vlln=self.config.model.tune_vlln,
@@ -118,6 +127,11 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                     "Checkpoint weight mismatch for "
                     f"{self.config.training.start_from_checkpoint}:\n" + "\n".join(errors)
                 )
+
+            if self.config.model.use_lora:
+                model.config.use_lora = True
+                model.backbone.use_lora = True
+                model.backbone._apply_language_lora()
 
         else:
             model = self.model_class(

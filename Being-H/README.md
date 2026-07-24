@@ -126,13 +126,8 @@ export EXPERT_MODEL=/path/to/cobot_magic_finetune/Being-H/Being-H05/checkpoint_m
 export RESUME_PATH=/path/to/cobot_magic_finetune/Being-H/Being-H05/checkpoint_models/beingh/Being-H05-2B
 ```
 
-The default dataset path is already registered as:
-
-```text
-/path/to/cobot_magic_sber
-```
-
-If you change it, update `Being-H05/configs/dataset_info.py` or keep the registry path and use a symlink.
+Export the dataset path before launch. Keep the `cobot_magic_sber_posttrain`
+entry in `Being-H05/configs/dataset_info.py` consistent with the same location.
 
 ## Full Training
 
@@ -144,6 +139,7 @@ This uses the existing Being-H freeze flags:
 --use_expert True        train/use the action expert path
 --use_flow_matching True train the continuous flow/action head
 --use_mpg True           train MPG adaptation/projection modules
+USE_LORA=True            train rank-8 adapters while base VLM weights stay frozen
 ```
 
 Launch:
@@ -155,11 +151,16 @@ micromamba activate beingh
 export PRETRAIN_MODEL=/path/to/cobot_magic_finetune/Being-H/Being-H05/checkpoint_models/beingh/InternVL3_5-2B
 export EXPERT_MODEL=/path/to/cobot_magic_finetune/Being-H/Being-H05/checkpoint_models/beingh/Qwen3-0.6B
 export RESUME_PATH=/path/to/cobot_magic_finetune/Being-H/Being-H05/checkpoint_models/beingh/Being-H05-2B
+export DATASET_DIR=/path/to/cobot_magic_sber
 
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
 NUM_GPUS=8 \
 RUN_NAME=cobot_magic_sber_beingh05_8h100 \
 TMUX_SESSION=beingh_cobot_magic_sber_8h100 \
+USE_LORA=True \
+LORA_RANK=8 \
+LORA_ALPHA=16 \
+LORA_DROPOUT=0.05 \
 bash scripts/train/train_cobot_magic_sber_2gpu.sh
 ```
 
@@ -199,17 +200,3 @@ Being-H LoRA runs are also saved as full checkpoints rather than adapter-only
 directories. At inference, the loader checks the state-dict keys. Checkpoints
 with `lora_A`/`lora_B` tensors are reconstructed and merged before the first
 forward pass; plain or already-merged checkpoints bypass the LoRA path.
-
-## Monitoring
-
-Stdout:
-
-```bash
-tail -f logs/stdout/cobot_magic_sber_beingh05_8h100.log
-```
-
-TensorBoard:
-
-```bash
-tensorboard --logdir logs/tensorboard --host 0.0.0.0 --port 6006
-```
